@@ -284,10 +284,13 @@ MainTab:CreateSection("------------------")
 local cachedUpvalueTable = nil
 
 local function getChunk()
-    if cachedUpvalueTable and cachedUpvalueTable.Prompt then
+    -- Всегда проверяем валидность таблицы
+    if cachedUpvalueTable and cachedUpvalueTable.Prompt and cachedUpvalueTable.Prompt ~= "" then
         return tostring(cachedUpvalueTable.Prompt):lower()
     end
 
+    -- Если таблица устарела или очистилась, ищем заново в памяти
+    cachedUpvalueTable = nil
     for _, v in pairs(getgc(true)) do
         if type(v) == "function" then
             local info = debug.getinfo(v)
@@ -306,7 +309,8 @@ end
 
 local function getGameStatus()
     local prompt = getChunk()
-    if not prompt then return nil, false end
+    if not prompt or prompt == "" then return nil, false end
+    
     local isMyTurn = false
     local localPlayer = Players.LocalPlayer
     if localPlayer then
@@ -414,15 +418,16 @@ function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    -- ЕСЛИ ПРОМПТ ИСЧЕЗ (РАУНД ОКОНЧЕН) — АВТОМАТИЧЕСКИ СБРАСЫВАЕМ ВСЁ
+    -- ЕСЛИ СЛОГ ПРОПАЛ ИЛИ ИЗМЕНИЛСЯ НА ПУСТОТУ — СБРАСЫВАЕМ ВСЁ
     if not contains or contains == "" then 
         if lastChunk ~= "" or next(sessionUsedWords) ~= nil then
             sessionUsedWords = {} 
             lastChunk = "" 
+            cachedUpvalueTable = nil -- Сбрасываем старую ссылку из GC
             wasMyTurn = false
             if promptLabel then promptLabel:Set("Current Prompt: None") end
             if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
-            if matchLabel then matchLabel:Set("Current Match: Cleared (Game Over)") end
+            if matchLabel then matchLabel:Set("Current Match: Cleared") end
         end
         return 
     end
@@ -503,6 +508,7 @@ if Games then
                     task.wait(1) 
                     sessionUsedWords = {} 
                     lastChunk = ""
+                    cachedUpvalueTable = nil -- При перезаходе сбрасываем ссылку GC
                     wasMyTurn = false
                 end)
             end
