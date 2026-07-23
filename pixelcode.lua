@@ -1,3 +1,4 @@
+-- Bro-PixelScript (Word Bomb Ultra) - улучшенная версия
 local RbxAnalytics = game:GetService("RbxAnalyticsService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -69,6 +70,7 @@ end
 print("Авторизация прошла успешно! Загрузка Bro-PixelScript...")
 
 -- === 2. НАСТРОЙКИ И ПЕРЕМЕННЫЕ ===
+-- Если true — слово будет удаляться из глобального списка при успешном использовании
 getgenv().deletewhendupefound = true
 
 local globalWordsList = {
@@ -145,18 +147,22 @@ local statusLabel = MainTab:CreateLabel("Loading dictionary...")
 local function loadDictionaryAsync(url)
     task.spawn(function()
         local success, raw = pcall(function() return game:HttpGet(url) end)
-        if not success or not raw then return end
-        
+        if not success or not raw then
+            pcall(function() statusLabel:Set("Dictionary: error loading (" .. tostring(raw) .. ")") end)
+            return
+        end
+
         local total = 0
         for word in raw:gmatch("[^\r\n]+") do
-            word = word:gsub("%s+", ""):lower()
-            if word ~= "" then
+            local w = word:gsub("%s+", ""):lower()
+            if w ~= "" then
                 total = total + 1
-                table.insert(globalWordsList, word)
-                if total % 10000 == 0 then task.wait() end
+                table.insert(globalWordsList, w)
+                if total % 5000 == 0 then task.wait() end
             end
         end
-        statusLabel:Set("Dictionary: " .. #globalWordsList .. " words (Ready)")
+
+        pcall(function() statusLabel:Set("Dictionary: " .. #globalWordsList .. " words (Ready)") end)
     end)
 end
 
@@ -266,27 +272,85 @@ local function GetLetterDelay()
     return math.max(base, 0.005)
 end
 
--- === НАДЕЖНЫЙ ДЕТЕКТОР ПРОМПТА И ХОДА ===
-local function getGameStatus()
-    local prompt = nil
-    local isMyTurn = false
+-- Удалить слово из глобального списка (если включено)
+local function removeFromGlobalWords(word)
+    if not getgenv().deletewhendupefound then return end
+    for i = 1, #globalWordsList do
+        if globalWordsList[i] == word then
+            table.remove(globalWordsList, i)
+            return
+        end
+    end
+end
 
+-- === НАДЕЖНЫЙ ДЕТЕКТОР ПРОМПТА И ХОДА ===
+local cachedInfoUpvalues = nil
+local function findUpdateInfoUpvaluesOnce()
+    if cachedInfoUpvalues then return cachedInfoUpvalues end
     pcall(function()
         for _, v in pairs(getgc()) do
-            if type(v) == "function" and debug.getinfo(v).name == "updateInfoFrame" then
-                for __, vv in pairs(debug.getupvalues(v)) do
-                    if type(vv) == "table" then
-                        if vv.Prompt ~= nil then
-                            prompt = tostring(vv.Prompt):gsub("%s+", ""):lower()
-                        end
-                        if vv.PlayerID ~= nil and vv.PlayerID == Players.LocalPlayer.UserId then
-                            isMyTurn = true
-                        end
+            if type(v) == "function" then
+                local ok, info = pcall(debug.getinfo, v)
+                if ok and info and info.name == "updateInfoFrame" then
+                    local ok2, up = pcall(debug.getupvalues, v)
+                    if ok2 and type(up) == "table" then
+                        cachedInfoUpvalues = up
+                        return
                     end
                 end
             end
         end
     end)
+    return cachedInfoUpvalues
+end
+
+local function getGameStatus()
+    local prompt = nil
+    local isMyTurn = false
+
+    -- Попробуем сначала использовать кешированные upvalues
+    local upvalues = findUpdateInfoUpvaluesOnce()
+    if upvalues then
+        pcall(function()
+            for __, vv in pairs(upvalues) do
+                if type(vv) == "table" then
+                    if vv.Prompt ~= nil then
+                        prompt = tostring(vv.Prompt):gsub("%s+", ""):lower()
+                    end
+                    if vv.PlayerID ~= nil and vv.PlayerID == Players.LocalPlayer.UserId then
+                        isMyTurn = true
+                    end
+                end
+            end
+        end)
+    end
+
+    -- Фоллбек: если не удалось получить всё нужное — один раз просканируем getgc
+    if (not prompt or prompt == "") or (not isMyTurn) then
+        pcall(function()
+            for _, v in pairs(getgc()) do
+                if type(v) == "function" then
+                    local infoOk, info = pcall(debug.getinfo, v)
+                    if infoOk and info and info.name == "updateInfoFrame" then
+                        local upOk, ups = pcall(debug.getupvalues, v)
+                        if upOk and type(ups) == "table" then
+                            for __, vv in pairs(ups) do
+                                if type(vv) == "table" then
+                                    if vv.Prompt ~= nil and (not prompt or prompt == "") then
+                                        prompt = tostring(vv.Prompt):gsub("%s+", ""):lower()
+                                    end
+                                    if vv.PlayerID ~= nil and vv.PlayerID == Players.LocalPlayer.UserId then
+                                        isMyTurn = true
+                                    end
+                                end
+                            end
+                            cachedInfoUpvalues = ups
+                        end
+                    end
+                end
+            end
+        end)
+    end
 
     if not prompt or prompt == "" then
         local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
@@ -301,28 +365,58 @@ local function getGameStatus()
     return prompt, isMyTurn
 end
 
+-- === НАДЁЖНАЯ ЭМИТАЦИЯ КЛАВИШ ===
+local keyMap = {
+    [" "] = Enum.KeyCode.Space,
+    ["-"] = Enum.KeyCode.Minus,
+    ["'"] = Enum.KeyCode.Quote,
+    ["."] = Enum.KeyCode.Period,
+    [","] = Enum.KeyCode.Comma,
+    ["/"] = Enum.KeyCode.Slash,
+    [";"] = Enum.KeyCode.Semicolon,
+    ["0"] = Enum.KeyCode.Zero, ["1"] = Enum.KeyCode.One, ["2"] = Enum.KeyCode.Two,
+    ["3"] = Enum.KeyCode.Three, ["4"] = Enum.KeyCode.Four, ["5"] = Enum.KeyCode.Five,
+    ["6"] = Enum.KeyCode.Six, ["7"] = Enum.KeyCode.Seven, ["8"] = Enum.KeyCode.Eight,
+    ["9"] = Enum.KeyCode.Nine
+}
+
 local function SimulateKey(char)
-    local keyCode = Enum.KeyCode[char:upper()]
-    if char == "-" then keyCode = Enum.KeyCode.Minus end
-    if char == "'" then keyCode = Enum.KeyCode.Quote end
-    
+    if not char or #char == 0 then return end
+    local upper = char:upper()
+    local keyCode = keyMap[char] or keyMap[upper]
+
+    if not keyCode then
+        if upper:match("^[A-Z]$") then
+            keyCode = Enum.KeyCode[upper]
+        end
+    end
+
     if keyCode then
-        Vim:SendKeyEvent(true, keyCode, false, game)
-        task.wait(0.002)
-        Vim:SendKeyEvent(false, keyCode, false, game)
+        pcall(function()
+            Vim:SendKeyEvent(true, keyCode, false, game)
+            task.wait(0.002)
+            Vim:SendKeyEvent(false, keyCode, false, game)
+        end)
+    else
+        -- unsupported char: тихо пропускаем; можно добавлять в keyMap при необходимости
+        -- print("SimulateKey: unsupported char ->", char)
     end
 end
 
 local function SimulateBackspace()
-    Vim:SendKeyEvent(true, Enum.KeyCode.Backspace, false, game)
-    task.wait(0.002)
-    Vim:SendKeyEvent(false, Enum.KeyCode.Backspace, false, game)
+    pcall(function()
+        Vim:SendKeyEvent(true, Enum.KeyCode.Backspace, false, game)
+        task.wait(0.002)
+        Vim:SendKeyEvent(false, Enum.KeyCode.Backspace, false, game)
+    end)
 end
 
 local function PressEnter()
-    Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-    task.wait(0.01)
-    Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+    pcall(function()
+        Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+        task.wait(0.01)
+        Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+    end)
 end
 
 -- === ПЕЧАТЬ ===
@@ -335,6 +429,7 @@ local function typeWordMobile(word, targetPrompt)
         
         local currentPrompt, isMyTurn = getGameStatus()
         if currentPrompt ~= targetPrompt or not isMyTurn then
+            isTyping = false
             return
         end
 
@@ -364,7 +459,7 @@ local function typeWordMobile(word, targetPrompt)
         task.wait(0.02)
         PressEnter()
         totalTurns = totalTurns + 1
-        turnsLabel:Set("Total Turns: " .. totalTurns)
+        pcall(function() turnsLabel:Set("Total Turns: " .. totalTurns) end)
     end)
     
     isTyping = false 
@@ -418,6 +513,10 @@ function copyword(bruteforce)
             
             if autotype and isMyTurn then
                 sessionUsedWords[finalword] = true
+                -- при необходимости удалить слово из глобального словаря, чтобы не повторялось в будущем
+                if getgenv().deletewhendupefound then
+                    removeFromGlobalWords(finalword)
+                end
                 task.spawn(function()
                     typeWordMobile(finalword, promptLower)
                 end)
@@ -466,6 +565,6 @@ task.spawn(function()
         local hours = math.floor(elapsed / 3600)
         local minutes = math.floor((elapsed % 3600) / 60)
         local seconds = elapsed % 60
-        elapsedLabel:Set(string.format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds))
+        pcall(function() elapsedLabel:Set(string.format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds)) end)
     end
 end)
