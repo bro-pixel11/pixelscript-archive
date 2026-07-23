@@ -1,4 +1,4 @@
--- Bro-PixelScript (Word Bomb Ultra) - интеграция jitter + автотипинга
+-- Bro-PixelScript (Word Bomb Ultra) - optimized prompt search integrated
 local RbxAnalytics = game:GetService("RbxAnalyticsService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -70,7 +70,6 @@ end
 print("Авторизация прошла успешно! Загрузка Bro-PixelScript...")
 
 -- === 2. НАСТРОЙКИ И ПЕРЕМЕННЫЕ ===
--- Удалять слово из глобального списка при использовании (если true)
 getgenv().deletewhendupefound = true
 
 local globalWordsList = {
@@ -94,15 +93,14 @@ local instanttype = false
 local autojoin = false
 local autoJoinDelay = 3
 
--- Jitter settings (взято из присланного скрипта)
+-- Jitter / typing
 local jitterEnabled = true
-local jitterIntensity = 0.16 -- в секундах (0.16 ~ 160ms max offset)
+local jitterIntensity = 0.16
 local typingWPM = 250
 local checkWordDelay = 0.2
 local minLen = 1
 local maxLen = 99
 local typoChance = 0
--- удалил humaniseWPM переменную — теперь используется jitterEnabled
 
 local burstCounter = 0
 local burstTarget = math.random(3, 7)
@@ -124,7 +122,7 @@ local Window = Rayfield:CreateWindow({
    Name = "Bro-PixelScript (Word Bomb Ultra)",
    LoadingTitle = "Bro-Pixel Loader",
    LoadingSubtitle = "by Bro-Pixel",
-   Theme = "CustomTheme", 
+   Theme = "CustomTheme",
    DisableRayfieldPrompts = false,
    DisableBuildWarnings = false,
    ConfigurationSaving = { Enabled = false },
@@ -132,10 +130,10 @@ local Window = Rayfield:CreateWindow({
    Size = UDim2.fromOffset(360, 300),
    CustomTheme = {
         TextColor = Color3.fromRGB(255, 255, 255),
-        Background = Color3.fromRGB(25, 10, 40),        
-        MainColor = Color3.fromRGB(90, 30, 180),       
-        AccentColor = Color3.fromRGB(0, 240, 200),       
-        OutlineColor = Color3.fromRGB(140, 50, 255),    
+        Background = Color3.fromRGB(25, 10, 40),
+        MainColor = Color3.fromRGB(90, 30, 180),
+        AccentColor = Color3.fromRGB(0, 240, 200),
+        OutlineColor = Color3.fromRGB(140, 50, 255),
         PlaceholderColor = Color3.fromRGB(180, 150, 220)
    }
 })
@@ -146,116 +144,51 @@ local StatsTab = Window:CreateTab("Stats", nil)
 
 local statusLabel = MainTab:CreateLabel("Loading dictionary...")
 
--- Загрузка словаря
+-- Загрузка словаря (безопасно, с yields)
 local function loadDictionaryAsync(url)
     task.spawn(function()
-        local success, raw = pcall(function() return game:HttpGet(url) end)
-        if not success or not raw then
-            pcall(function() statusLabel:Set("Dictionary: error loading (" .. tostring(raw) .. ")") end)
+        local ok, raw = pcall(game.HttpGet, game, url)
+        if not ok or not raw then
+            pcall(function() statusLabel:Set("Dictionary: error loading") end)
             return
         end
-
         local total = 0
-        for word in raw:gmatch("[^\r\n]+") do
-            local w = word:gsub("%s+", ""):lower()
-            if w ~= "" then
+        for w in raw:gmatch("[^\r\n]+") do
+            local s = w:gsub("%s+", ""):lower()
+            if s ~= "" then
                 total = total + 1
-                table.insert(globalWordsList, w)
-                if total % 5000 == 0 then task.wait() end
+                table.insert(globalWordsList, s)
+                if (total % 5000) == 0 then task.wait() end
             end
         end
-
         pcall(function() statusLabel:Set("Dictionary: " .. #globalWordsList .. " words (Ready)") end)
     end)
 end
 
 loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt")
 
--- === UI ВКЛАДКИ ===
-MainTab:CreateToggle({ 
-    Name = "Auto Type & Search", 
-    CurrentValue = false, 
-    Callback = function(Value) autotype = Value end 
-})
-
-MainTab:CreateToggle({ 
-    Name = "Instant Type (No Delay)", 
-    CurrentValue = false, 
-    Callback = function(Value) instanttype = Value end 
-})
-
-MainTab:CreateToggle({
-    Name = "Auto Join Game",
-    CurrentValue = false,
-    Callback = function(Value) autojoin = Value end
-})
-
-MainTab:CreateButton({ 
-    Name = "Search Word (Manual)", 
-    Callback = function() copyword(true) end 
-})
+-- === UI Элементы ===
+MainTab:CreateToggle({ Name = "Auto Type & Search", CurrentValue = false, Callback = function(v) autotype = v end })
+MainTab:CreateToggle({ Name = "Instant Type (No Delay)", CurrentValue = false, Callback = function(v) instanttype = v end })
+MainTab:CreateToggle({ Name = "Auto Join Game", CurrentValue = false, Callback = function(v) autojoin = v end })
+MainTab:CreateButton({ Name = "Search Word (Manual)", Callback = function() copyword(true) end })
 
 SettingsTab:CreateSlider({
-   Name = "Typing WPM",
-   Range = {50, 1000},
-   Increment = 25,
-   Suffix = " WPM",
-   CurrentValue = 250,
+   Name = "Typing WPM", Range = {50, 1000}, Increment = 25, Suffix = " WPM", CurrentValue = 250,
    Callback = function(Value) typingWPM = Value end,
 })
-
-SettingsTab:CreateToggle({
-   Name = "Jitter Typing",
-   CurrentValue = true,
-   Callback = function(Value) jitterEnabled = Value end,
-})
-
+SettingsTab:CreateToggle({ Name = "Jitter Typing", CurrentValue = true, Callback = function(v) jitterEnabled = v end })
 SettingsTab:CreateSlider({
-   Name = "Jitter Delay",
-   Info = "Jittering strength (ms)",
-   Range = {1, 50}, 
-   Increment = 1,
-   Suffix = " ms", 
-   CurrentValue = 16, 
+   Name = "Jitter Delay", Range = {1,50}, Increment = 1, Suffix = " ms", CurrentValue = 16,
    Callback = function(Value) jitterIntensity = Value / 100 end,
 })
-
 SettingsTab:CreateSlider({
-   Name = "Typo Chance (Опечатки)",
-   Info = "Шанс сделать случайную ошибку и исправить её",
-   Range = {0, 20},
-   Increment = 1,
-   Suffix = "%",
-   CurrentValue = 0,
+   Name = "Typo Chance (Опечатки)", Range = {0,20}, Increment = 1, Suffix = "%", CurrentValue = 0,
    Callback = function(Value) typoChance = Value / 100 end,
 })
-
-SettingsTab:CreateSlider({
-   Name = "Min Word Length",
-   Range = {1, 15},
-   Increment = 1,
-   Suffix = " letters",
-   CurrentValue = 1,
-   Callback = function(Value) minLen = Value end,
-})
-
-SettingsTab:CreateSlider({
-   Name = "Max Word Length",
-   Range = {3, 30},
-   Increment = 1,
-   Suffix = " letters",
-   CurrentValue = 30,
-   Callback = function(Value) maxLen = Value end,
-})
-
-SettingsTab:CreateSlider({
-   Name = "Check Word Delay",
-   Range = {1, 20}, 
-   Increment = 1,
-   Suffix = " (x0.1 sec)",
-   CurrentValue = 2, 
-   Callback = function(Value) checkWordDelay = Value / 10 end,
-})
+SettingsTab:CreateSlider({ Name = "Min Word Length", Range = {1,15}, Increment = 1, CurrentValue = 1, Callback = function(v) minLen = v end })
+SettingsTab:CreateSlider({ Name = "Max Word Length", Range = {3,30}, Increment = 1, CurrentValue = 30, Callback = function(v) maxLen = v end })
+SettingsTab:CreateSlider({ Name = "Check Word Delay", Range = {1,20}, Increment = 1, CurrentValue = 2, Callback = function(v) checkWordDelay = v/10 end })
 
 local elapsedLabel = StatsTab:CreateLabel("Elapsed Time: 00:00:00")
 local turnsLabel = StatsTab:CreateLabel("Total Turns: 0")
@@ -263,30 +196,25 @@ local promptLabel = StatsTab:CreateLabel("Current Prompt: None")
 local solutionsLabel = StatsTab:CreateLabel("Solutions Found: 0")
 local matchLabel = StatsTab:CreateLabel("Current Match: None")
 
--- === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+-- === HELPERS (typing/jitter/etc) ===
 local function GetLetterDelay()
-    -- базовая задержка равна одному символу при typingWPM
     local base = 60 / (typingWPM * 5)
     if jitterEnabled then
         local offset = (math.random() * 2 - 1) * jitterIntensity
         base = base + offset
     else
-        -- небольшая вариация, чтобы избежать робота-равномерности
         base = base * (0.95 + math.random() * 0.1)
     end
 
-    -- burst behavior retained (soft)
     burstCounter = burstCounter + 1
     if burstCounter >= burstTarget then
         burstCounter = 0
         burstTarget = math.random(3, 7)
         base = base + (0.02 + math.random() * 0.06)
     end
-
     return math.max(base, 0.005)
 end
 
--- Удалить слово из глобального списка (если включено)
 local function removeFromGlobalWords(word)
     if not getgenv().deletewhendupefound then return end
     for i = 1, #globalWordsList do
@@ -297,148 +225,214 @@ local function removeFromGlobalWords(word)
     end
 end
 
--- ===== ЗАМЕНА: улучшённый getGameStatus с валидацией видимости prompt в UI =====
-local cachedInfoUpvalues = nil
+-- === ОПТИМИЗИРОВАННАЯ ЛОГИКА ПОИСКА ПРОМПТА (GUI-FIRST, минимальные сканы) ===
+-- Конфигурация
+local PROMPT_MIN_LEN = 2                -- разрешаем 2-символьные промпты
+local PROMPT_STABLE_THRESHOLD = 2       -- сколько одинаковых тиков, чтобы подтвердить промпт
+local PROMPT_MISSING_THRESHOLD = 2      -- сколько пропаданий, чтобы считать промпт ушедшим
+local GUI_CONTAINER_NAMES = { "GameUI", "DesktopUI", "MobileUI", "MainUI" } -- ограничиваем поиск
+local PROMPT_LABEL_NAMES = { "PromptLabel", "Prompt", "InfoFrame" } -- имена, где чаще всего промпт
+local GC_FALLBACK_INTERVAL = 5          -- seconds between expensive getgc scans (rare)
 
-local function promptVisibleInGUI(prompt)
-    if not prompt or prompt == "" then return false end
-    local playerGui = Players.LocalPlayer and Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return false end
+-- внутренние состояния для debounce и оптимизации
+local lastSeenPrompt = nil
+local promptStableCount = 0
+local missingPromptCount = 0
+local lastGCTime = 0
 
-    local needle = tostring(prompt):gsub("%s+", ""):lower()
-    for _, v in pairs(playerGui:GetDescendants()) do
-        if v:IsA("TextLabel") and v.Visible and v.Text and v.Text ~= "" then
-            local txt = v.Text:gsub("%s+", ""):lower()
-            if txt:find(needle, 1, true) then
+-- локализованные быстрые ссылки (для производительности)
+local Players_local = Players
+local tostring_local = tostring
+local string_gsub = string.gsub
+local string_lower = string.lower
+local string_find = string.find
+
+-- проверяем, что GUI-элемент находится под игровым контейнером (быстрая проверка)
+local function isUnderAllowedContainer(obj)
+    if not obj or not obj.Parent then return false end
+    -- поднимаемся вверх не более 6 уровней, чтобы избежать долгих циклов
+    local cur = obj
+    for i = 1, 6 do
+        if not cur then break end
+        local name = tostring(cur.Name)
+        name = string_lower(name)
+        for _, allowed in ipairs(GUI_CONTAINER_NAMES) do
+            if name == string_lower(allowed) then
                 return true
             end
         end
+        cur = cur.Parent
     end
     return false
 end
 
-local function findUpdateInfoUpvaluesOnce()
-    if cachedInfoUpvalues then return cachedInfoUpvalues end
-    pcall(function()
-        for _, v in pairs(getgc()) do
-            if type(v) == "function" then
-                local ok, info = pcall(debug.getinfo, v)
-                if ok and info and info.name == "updateInfoFrame" then
-                    local ok2, up = pcall(debug.getupvalues, v)
-                    if ok2 and type(up) == "table" then
-                        cachedInfoUpvalues = up
-                        return
+-- Быстрый GUI-first поиск промпта; выходит при первом найденном релевантном значении
+local function findPromptInPlayerGui(playerGui)
+    if not playerGui then return nil end
+
+    -- 1) Сначала попытка FindFirstChild для известных меток (рекурсивно) — очень быстро
+    for _, containerName in ipairs(GUI_CONTAINER_NAMES) do
+        local container = playerGui:FindFirstChild(containerName)
+        if container then
+            for _, plName in ipairs(PROMPT_LABEL_NAMES) do
+                local lbl = container:FindFirstChild(plName, true)
+                if lbl and lbl:IsA("TextLabel") and lbl.Visible and lbl.Text and #lbl.Text > 0 and isUnderAllowedContainer(lbl) then
+                    local txt = string_gsub(tostring_local(lbl.Text), "%s+", "")
+                    txt = string_lower(txt)
+                    if #txt >= PROMPT_MIN_LEN then
+                        return txt
                     end
                 end
             end
         end
-    end)
-    return cachedInfoUpvalues
-end
-
-local function isWaitingLikeText(t)
-    if not t or t == "" then return false end
-    local s = tostring(t):lower()
-    -- ключевые слова для окончания раунда / ожидания (англ + рус)
-    local bad = {"waiting", "wait", "press", "game over", "round over", "end", "finished", "finish", "подождите", "ожидайте", "конец", "конецраунда", "игра закончена", "дождитесь", "заверш"}
-    for _, kw in ipairs(bad) do
-        if s:find(kw, 1, true) then return true end
     end
-    return false
-end
 
-local function getGameStatus()
-    local prompt = nil
-    local isMyTurn = false
-
-    -- 1) Попытка через кэш upvalues (быстро)
-    local upvalues = findUpdateInfoUpvaluesOnce()
-    if upvalues then
-        pcall(function()
-            for _, vv in pairs(upvalues) do
-                if type(vv) == "table" then
-                    if vv.Prompt ~= nil and tostring(vv.Prompt) ~= "" then
-                        prompt = tostring(vv.Prompt):gsub("%s+", ""):lower()
-                    end
-                    if vv.PlayerID ~= nil and vv.PlayerID == Players.LocalPlayer.UserId then
-                        isMyTurn = true
+    -- 2) Если контейнеры существуют, делаем короткий рекурсивный проход но с ранним выходом.
+    --    Ищем только в найденных контейнерах, если они есть.
+    for _, containerName in ipairs(GUI_CONTAINER_NAMES) do
+        local container = playerGui:FindFirstChild(containerName)
+        if container then
+            -- проход по GetDescendants ограниченный: быстро проверяем и выходим при первом совпадении
+            local desc = container:GetDescendants()
+            for i = 1, #desc do
+                local v = desc[i]
+                if v and v:IsA and v:IsA("TextLabel") and v.Visible and v.Text and #v.Text >= PROMPT_MIN_LEN then
+                    local txt = string_gsub(tostring_local(v.Text), "%s+", "")
+                    txt = string_lower(txt)
+                    -- фильтруем метки хода/служебные слова
+                    if not (string_find(txt, "turn") or string_find(txt, "ход") or string_find(txt, "быстро")) then
+                        return txt
                     end
                 end
             end
-        end)
+        end
     end
 
-    -- 2) Фолбэк через PlayerGui, если не найден или пуст
-    if (not prompt or prompt == "") then
-        pcall(function()
-            local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
-            if playerGui then
-                local promptLbl = playerGui:FindFirstChild("PromptLabel", true)
-                if promptLbl and promptLbl.Text ~= "" then
-                    prompt = promptLbl.Text:gsub("%s+", ""):lower()
-                else
-                    -- более общий поиск через текстовые метки (если конкретный PromptLabel отсутствует)
-                    for _, v in pairs(playerGui:GetDescendants()) do
-                        if v:IsA("TextLabel") and v.Visible and v.Text and #v.Text > 0 then
-                            local txt = v.Text:gsub("%s+", ""):lower()
-                            -- heurистика: короткий текст 2..6 символов скорее всего промпт
-                            if #txt >= 2 and #txt <= 6 and not txt:find("turn") and not txt:find("ход") then
-                                prompt = txt
-                                break
+    return nil
+end
+
+-- Редкий, дорогой fallback через getgc — используется только не чаще чем GC_FALLBACK_INTERVAL секунд
+local function getPromptFromGC()
+    local now = os.clock()
+    if now - lastGCTime < GC_FALLBACK_INTERVAL then return nil end
+    lastGCTime = now
+
+    -- безопасно pcall весь блок
+    local ok, res = pcall(function()
+        for _, v in pairs(getgc(true)) do
+            if type(v) == "function" then
+                local info = debug.getinfo(v)
+                if info and info.name == "updateInfoFrame" then
+                    local ups = debug.getupvalues(v)
+                    if type(ups) == "table" then
+                        for _, up in pairs(ups) do
+                            if type(up) == "table" and up.Prompt and tostring_local(up.Prompt) ~= "" then
+                                local cand = string_lower(string_gsub(tostring_local(up.Prompt), "%s+", ""))
+                                if #cand >= PROMPT_MIN_LEN then
+                                    return cand
+                                end
                             end
                         end
                     end
                 end
             end
-        end)
-    end
+        end
+        return nil
+    end)
+    if ok then return res end
+    return nil
+end
 
-    -- 3) Проверка: действительно ли найденный prompt видим в GUI; если нет — считаем его отсутствующим
-    if prompt and prompt ~= "" then
-        if not promptVisibleInGUI(prompt) then
-            -- если текст похож на "waiting"/"press"/"game over" и не видим — тоже считаем отсутствующим
-            if isWaitingLikeText(prompt) then
-                prompt = nil
-            else
-                -- часто upvalues могут хранить устаревший prompt; если он не виден в GUI — сбрасываем
-                prompt = nil
+-- Основная оптимизированная функция, возвращает prompt (или nil) и isMyTurn (bool)
+local function getGameStatusOptimized()
+    -- быстрое локальное получение playerGui
+    local player = Players_local.LocalPlayer
+    if not player then return nil, false end
+    local playerGui = player:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil, false end
+
+    -- GUI-first поиск (быстро и доминирует)
+    local found = findPromptInPlayerGui(playerGui)
+
+    -- Если нет GUI-результата, можно (редко) попробовать GC fallback — но только если нужно
+    if (not found or found == "") then
+        -- не используем GC часто; это дорогая операция
+        found = getPromptFromGC()
+        -- но подтверждать через GUI строго: если GC нашёл, но GUI не подтверждает, игнорируем GC
+        if found then
+            -- quick check: is any visible TextLabel contains this cand? (cheap)
+            local needle = found
+            local seen = false
+            for _, containerName in ipairs(GUI_CONTAINER_NAMES) do
+                local container = playerGui:FindFirstChild(containerName)
+                if container then
+                    local desc = container:GetDescendants()
+                    for i = 1, #desc do
+                        local v = desc[i]
+                        if v and v:IsA and v:IsA("TextLabel") and v.Visible and v.Text then
+                            local txt = string_lower(string_gsub(tostring_local(v.Text), "%s+", ""))
+                            if txt:find(needle, 1, true) then
+                                seen = true
+                                break
+                            end
+                        end
+                    end
+                    if seen then break end
+                end
+            end
+            if not seen then
+                -- ignore GC result to avoid stale prompts
+                found = nil
             end
         end
     end
 
-    -- 4) Проверка флага хода через UI как дополнительный источник (fallback)
-    if not isMyTurn then
-        pcall(function()
-            local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
-            if playerGui then
-                for _, v in pairs(playerGui:GetDescendants()) do
-                    if v:IsA("TextLabel") and v.Visible and v.Text then
-                        local txt = v.Text:lower()
-                        if txt:find("quick") or txt:find("your turn") or txt:find("ходи") or txt:find("быстро") then
-                            isMyTurn = true
-                            break
-                        end
+    -- Определение isMyTurn — минимальный короткий поиск по UI
+    local isMyTurn = false
+    -- ищем ключевые слова "quick", "your turn", "быстро", "ходи" в ограниченных контейнерах
+    for _, containerName in ipairs(GUI_CONTAINER_NAMES) do
+        local container = playerGui:FindFirstChild(containerName)
+        if container then
+            local desc = container:GetDescendants()
+            for i = 1, #desc do
+                local v = desc[i]
+                if v and v:IsA and v:IsA("TextLabel") and v.Visible and v.Text then
+                    local txt = string_lower(v.Text)
+                    if string_find(txt, "quick") or string_find(txt, "your turn") or string_find(txt, "быстро") or string_find(txt, "ходи") then
+                        isMyTurn = true
+                        break
                     end
                 end
             end
-        end)
+        end
+        if isMyTurn then break end
     end
 
-    return prompt, isMyTurn
-end
-
-local function getGameTextBox()
-    local localPlayer = Players.LocalPlayer
-    if not localPlayer then return nil end
-    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return nil end
-    for _, v in pairs(playerGui:GetDescendants()) do
-        if v:IsA("TextBox") and v.Visible and v.Parent.Name ~= "Rayfield" then return v end
+    -- Debounce / stability: обновляем lastSeenPrompt / stable counters
+    if found and found ~= "" then
+        if lastSeenPrompt == found then
+            promptStableCount = promptStableCount + 1
+        else
+            lastSeenPrompt = found
+            promptStableCount = 1
+        end
+        missingPromptCount = 0
+    else
+        missingPromptCount = missingPromptCount + 1
+        promptStableCount = 0
+        if missingPromptCount >= PROMPT_MISSING_THRESHOLD then
+            lastSeenPrompt = nil
+        end
     end
-    return nil
+
+    if lastSeenPrompt and promptStableCount >= PROMPT_STABLE_THRESHOLD then
+        return lastSeenPrompt, isMyTurn
+    end
+
+    return nil, isMyTurn
 end
 
--- === НАДЁЖНАЯ ЭМИТАЦИЯ КЛАВИШ ===
+-- === Key emulation ===
 local keyMap = {
     [" "] = Enum.KeyCode.Space,
     ["-"] = Enum.KeyCode.Minus,
@@ -457,13 +451,11 @@ local function SimulateKey(char)
     if not char or #char == 0 then return end
     local upper = char:upper()
     local keyCode = keyMap[char] or keyMap[upper]
-
     if not keyCode then
         if upper:match("^[A-Z]$") then
             keyCode = Enum.KeyCode[upper]
         end
     end
-
     if keyCode then
         pcall(function()
             Vim:SendKeyEvent(true, keyCode, false, game)
@@ -489,7 +481,18 @@ local function PressEnter()
     end)
 end
 
--- === ПЕЧАТЬ (интегрированный jitter + автотипинг) ===
+-- === Typing function (uses optimized getGameStatus) ===
+local function getGameTextBox()
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then return nil end
+    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+    for _, v in pairs(playerGui:GetDescendants()) do
+        if v:IsA("TextBox") and v.Visible and v.Parent.Name ~= "Rayfield" then return v end
+    end
+    return nil
+end
+
 local function typeWordMobile(word, targetPrompt)
     if isTyping then return end
     isTyping = true
@@ -497,7 +500,7 @@ local function typeWordMobile(word, targetPrompt)
     pcall(function()
         if not instanttype and checkWordDelay > 0 then task.wait(checkWordDelay) end
 
-        local currentPrompt, isMyTurn = getGameStatus()
+        local currentPrompt, isMyTurn = getGameStatusOptimized()
         if currentPrompt ~= targetPrompt or not isMyTurn then
             isTyping = false
             return
@@ -512,7 +515,7 @@ local function typeWordMobile(word, targetPrompt)
         end
 
         for i = 1, #word do
-            local checkPrompt, checkTurn = getGameStatus()
+            local checkPrompt, checkTurn = getGameStatusOptimized()
             if checkPrompt ~= targetPrompt or not checkTurn then break end
 
             local char = string.sub(word, i, i)
@@ -543,10 +546,10 @@ local function typeWordMobile(word, targetPrompt)
     isTyping = false
 end
 
--- === ОСНОВНОЙ ПОИСК (использует стратегию special/normal matches из присланного скрипта) ===
+-- === Main search logic (unchanged strategy) ===
 function copyword(bruteforce)
     if isTyping then return end
-    local contains, isMyTurn = getGameStatus()
+    local contains, isMyTurn = getGameStatusOptimized()
 
     if not contains or contains == "" then
         if lastChunk ~= "WAITING" then
@@ -567,7 +570,7 @@ function copyword(bruteforce)
 
     if lastChunk ~= contains or bruteforce or turnSwitchedToMe then
         lastChunk = contains
-        promptLabel:Set("Current Prompt: " .. contains:upper())
+        pcall(function() promptLabel:Set("Current Prompt: " .. contains:upper()) end)
 
         local promptLower = contains:lower()
         local specialMatches = {}
@@ -589,7 +592,7 @@ function copyword(bruteforce)
         end
 
         local totalSolutions = #specialMatches + #normalMatches
-        solutionsLabel:Set("Solutions Found: " .. (totalSolutions >= 5 and "5+" or tostring(totalSolutions)))
+        pcall(function() solutionsLabel:Set("Solutions Found: " .. (totalSolutions >= 5 and "5+" or tostring(totalSolutions))) end)
 
         local finalword = nil
 
@@ -607,11 +610,9 @@ function copyword(bruteforce)
 
         if finalword then
             sessionUsedWords[finalword] = true
-            matchLabel:Set("Current Match: " .. finalword:upper())
+            pcall(function() matchLabel:Set("Current Match: " .. finalword:upper()) end)
 
-            if getgenv().deletewhendupefound then
-                removeFromGlobalWords(finalword)
-            end
+            if getgenv().deletewhendupefound then removeFromGlobalWords(finalword) end
 
             if autotype and isMyTurn then
                 task.spawn(function()
@@ -620,33 +621,31 @@ function copyword(bruteforce)
                 lastChunk = ""
             end
         else
-            matchLabel:Set("Current Match: Not Found")
+            pcall(function() matchLabel:Set("Current Match: Not Found") end)
         end
     end
 end
 
--- === ФОНОВЫЙ ЦИКЛ ПОИСКА И ПЕЧАТИ ===
+-- === Background search loop (lightweight) ===
 task.spawn(function()
     while task.wait(0.15) do
         if autotype or autojoin then
-            pcall(function()
-                copyword(false)
-            end)
+            pcall(copyword, false)
         end
     end
 end)
 
--- === АВТО-ПРИСОЕДИНЕНИЕ (AUTO JOIN) ===
+-- === Auto join handler ===
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
-            if autojoin then 
+            if autojoin then
                 task.spawn(function()
                     if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
                     pcall(function() Games.GameEvent:FireServer(gameRoomID, "JoinGame") end)
-                    task.wait(1) 
-                    sessionUsedWords = {} 
+                    task.wait(1)
+                    sessionUsedWords = {}
                     lastChunk = "WAITING"
                     wasMyTurn = false
                 end)
@@ -655,22 +654,26 @@ if Games then
     end
 end
 
--- === ANTI-DUPE (background collection) ===
+-- === Anti-dupe collector (lightweight) ===
 task.spawn(function()
     while task.wait(0.8) do
-        -- здесь можно отметить видимые заголовки как использованные
+        if not autotype then continue end
         local localPlayer = Players.LocalPlayer
         local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
-        local gameGui = playerGui and (playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI"))
-        
-        if gameGui then
-            for _, v in pairs(gameGui:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Visible and #v.Text >= 2 then
-                    local text = v.Text:gsub("%s+", "")
-                    if text == text:upper() and not text:find("%d") and not text:find("TURN") and not text:find("ХОД") then
-                        local lowerWord = text:lower()
-                        if not sessionUsedWords[lowerWord] then
-                            sessionUsedWords[lowerWord] = true
+        if not playerGui then continue end
+        for _, c in ipairs(GUI_CONTAINER_NAMES) do
+            local gameGui = playerGui:FindFirstChild(c)
+            if gameGui then
+                local desc = gameGui:GetDescendants()
+                for i = 1, #desc do
+                    local v = desc[i]
+                    if v and v:IsA and v:IsA("TextLabel") and v.Visible and #v.Text >= 2 then
+                        local text = v.Text:gsub("%s+", "")
+                        if text == text:upper() and not text:find("%d") and not text:find("TURN") and not text:find("ХОД") then
+                            local lowerWord = text:lower()
+                            if not sessionUsedWords[lowerWord] then
+                                sessionUsedWords[lowerWord] = true
+                            end
                         end
                     end
                 end
@@ -679,7 +682,7 @@ task.spawn(function()
     end
 end)
 
--- === ТАЙМЕР ===
+-- === Timer ===
 task.spawn(function()
     while task.wait(1) do
         local elapsed = os.time() - startTime
