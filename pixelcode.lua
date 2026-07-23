@@ -145,7 +145,7 @@ local lastChunk = ""
 local lastTypeTime = 0
 local wasMyTurn = false
 local isTyping = false 
-local isWaitingNewGame = false -- Флаг блокировки ввода после Auto-Join
+local isWaitingNewGame = false
 
 local checkWordDelay = 1.0 
 local startTime = os.time()
@@ -167,7 +167,7 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === ОБНОВЛЕННАЯ СИСТЕМА СБРОСА И ПОИСКА ===
+-- === ОБНОВЛЕННАЯ СИСТЕМА ДЕТЕКЦИИ ПРОМПТА И РАУНДА ===
 local cachedUpdateFunc = nil
 
 local function resetRoundData()
@@ -183,6 +183,27 @@ end
 local function getChunk()
     if isWaitingNewGame then return nil end
 
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then return nil end
+    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+
+    -- 1. Первичная проверка прямо из видимого UI
+    local gameGui = playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI")
+    if gameGui then
+        for _, v in pairs(gameGui:GetDescendants()) do
+            if v:IsA("TextLabel") and v.Visible and v.Parent and v.Parent.Name ~= "Rayfield" then
+                local txt = v.Text:gsub("%s+", ""):lower()
+                if #txt >= 2 and #txt <= 4 and txt == txt:lower() and not txt:find("%d") then
+                    if not txt:find("turn") and not txt:find("quick") and not txt:find("join") and not txt:find("быстро") then
+                        return txt
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2. Проверка через кэшированную функцию GC
     if cachedUpdateFunc then
         local ok, prompt = pcall(function()
             for _, up in pairs(debug.getupvalues(cachedUpdateFunc)) do
@@ -195,14 +216,18 @@ local function getChunk()
         cachedUpdateFunc = nil
     end
 
+    -- 3. Резервный поиск в GC
     for _, v in pairs(getgc(true)) do
         if type(v) == "function" then
             local info = debug.getinfo(v)
             if info and info.name == "updateInfoFrame" then
                 for _, up in pairs(debug.getupvalues(v)) do
                     if type(up) == "table" and up.Prompt then
-                        cachedUpdateFunc = v
-                        return tostring(up.Prompt):lower() 
+                        local pStr = tostring(up.Prompt):lower()
+                        if pStr ~= "" then
+                            cachedUpdateFunc = v
+                            return pStr
+                        end
                     end
                 end
             end
@@ -440,15 +465,15 @@ MainTab:CreateToggle({
         autojoin = Value
         if autojoin and Games then
             task.spawn(function()
-                if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
                 isWaitingNewGame = true
                 resetRoundData()
+                if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
                 pcall(function()
                     for i = -1, -20, -1 do 
                         Games.GameEvent:FireServer(i, "JoinGame") 
                     end
                 end)
-                task.wait(1.5)
+                task.wait(2)
                 isWaitingNewGame = false
             end)
         end
@@ -540,14 +565,14 @@ solutionsLabel = MainTab:CreateLabel("Solutions Found: 0")
 matchLabel = MainTab:CreateLabel("Current Match: None")
 MainTab:CreateSection("------------------")
 
--- === ФОНОВЫЙ ПОТОК AUTO JOIN (ПОЛНЫЙ СБРОС И БЛОКИРОВКА ПРИ ВХОДЕ) ===
+-- === AUTO JOIN & EVENT HANDLER ===
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
             if autojoin then 
                 task.spawn(function()
-                    isWaitingNewGame = true -- Блокируем ввод при переподключении
+                    isWaitingNewGame = true
                     resetRoundData()
                     
                     if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
@@ -556,9 +581,7 @@ if Games then
                         Games.GameEvent:FireServer(gameRoomID, "JoinGame") 
                     end)
                     
-                    -- Ждем 1.5 секунды, пока игра запустится и передаст новый промпт
-                    task.wait(1.5)
-                    cachedUpdateFunc = nil
+                    task.wait(2)
                     isWaitingNewGame = false
                 end)
             end
