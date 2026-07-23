@@ -11,7 +11,7 @@ local KEYS_URL = "https://raw.githubusercontent.com/bro-pixel11/keys.json/main/a
 local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
 
 if not userProvidedKey or userProvidedKey == "" then
-    Players.LocalPlayer:Kick("❌ Ошибка: Ключ не найден! Укажите getgenv().PixelKey = 'ВАШ_КЛЮЧ' перед loadstring.")
+    Players.LocalPlayer:Kick("Ошибка: Ключ не найден! Укажите getgenv().PixelKey = 'ВАШ_КЛЮЧ' перед loadstring.")
     return
 end
 
@@ -61,12 +61,12 @@ end
 local isAuthenticated, authMessage = authenticate()
 
 if not isAuthenticated then
-    Players.LocalPlayer:Kick("🔒 [Bro-Pixel Auth]: " .. authMessage)
+    Players.LocalPlayer:Kick("[Bro-Pixel Auth]: " .. authMessage)
     error("[AUTH FAILED]: " .. authMessage)
     return
 end
 
-print("✅ Авторизация прошла успешно! Загрузка Bro-PixelScript...")
+print("Авторизация прошла успешно! Загрузка Bro-PixelScript...")
 
 -- === 2. НАСТРОЙКИ И ПЕРЕМЕННЫЕ ===
 getgenv().deletewhendupefound = true
@@ -117,8 +117,8 @@ if Games then Games = Games:WaitForChild("Games", 10) end
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 local Window = Rayfield:CreateWindow({
-   Name = "🎨 Bro-PixelScript (Word Bomb Ultra) 🎨",
-   LoadingTitle = "⚡ Bro-Pixel Loader ⚡",
+   Name = "Bro-PixelScript (Word Bomb Ultra)",
+   LoadingTitle = "Bro-Pixel Loader",
    LoadingSubtitle = "by Bro-Pixel",
    Theme = "CustomTheme", 
    DisableRayfieldPrompts = false,
@@ -136,11 +136,11 @@ local Window = Rayfield:CreateWindow({
    }
 })
 
-local MainTab = Window:CreateTab("🪐 Main", nil)
-local SettingsTab = Window:CreateTab("⚙️ Settings", nil)
-local StatsTab = Window:CreateTab("📊 Stats", nil)
+local MainTab = Window:CreateTab("Main", nil)
+local SettingsTab = Window:CreateTab("Settings", nil)
+local StatsTab = Window:CreateTab("Stats", nil)
 
-local statusLabel = MainTab:CreateLabel("⏳ Loading dictionary...")
+local statusLabel = MainTab:CreateLabel("Loading dictionary...")
 
 -- Загрузка словаря
 local function loadDictionaryAsync(url)
@@ -157,39 +157,36 @@ local function loadDictionaryAsync(url)
                 if total % 10000 == 0 then task.wait() end
             end
         end
-        statusLabel:Set("📚 Dictionary: " .. #globalWordsList .. " words (Ready)")
+        statusLabel:Set("Dictionary: " .. #globalWordsList .. " words (Ready)")
     end)
 end
 
 loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt")
 
--- === ЭЛЕМЕНТЫ UI (MAIN TAB) ===
+-- === UI ВКЛАДКИ ===
 MainTab:CreateToggle({ 
-    Name = "⚡ Auto Type & Search ⚡", 
+    Name = "Auto Type & Search", 
     CurrentValue = false, 
-    Callback = function(Value) 
-        autotype = Value 
-    end 
+    Callback = function(Value) autotype = Value end 
 })
 
 MainTab:CreateToggle({ 
-    Name = "🚀 Instant Type (No Delay)", 
+    Name = "Instant Type (No Delay)", 
     CurrentValue = false, 
     Callback = function(Value) instanttype = Value end 
 })
 
 MainTab:CreateToggle({
-    Name = "🚪 Auto Join Game 🚪",
+    Name = "Auto Join Game",
     CurrentValue = false,
     Callback = function(Value) autojoin = Value end
 })
 
 MainTab:CreateButton({ 
-    Name = "🔥 Search Word (Manual) 🔥", 
+    Name = "Search Word (Manual)", 
     Callback = function() copyword(true) end 
 })
 
--- === ЭЛЕМЕНТЫ UI (SETTINGS TAB) ===
 SettingsTab:CreateSlider({
    Name = "Typing WPM",
    Range = {50, 1000},
@@ -242,7 +239,6 @@ SettingsTab:CreateSlider({
    Callback = function(Value) checkWordDelay = Value / 10 end,
 })
 
--- === STATS TAB ===
 local elapsedLabel = StatsTab:CreateLabel("Elapsed Time: 00:00:00")
 local turnsLabel = StatsTab:CreateLabel("Total Turns: 0")
 local promptLabel = StatsTab:CreateLabel("Current Prompt: None")
@@ -271,48 +267,40 @@ local function GetLetterDelay()
     return math.max(base, 0.005)
 end
 
-local function getChunk()
-    local localPlayer = Players.LocalPlayer
-    if not localPlayer then return nil end
-    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return nil end
-
-    for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "MainUI"}) do
-        local gameGui = playerGui:FindFirstChild(guiName)
-        if gameGui then
-            for _, v in pairs(gameGui:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Visible and v.Parent and (v.Parent.Name == "InfoFrame" or v.Name == "Prompt" or v.Name == "Frame") then
-                    local txt = v.Text:gsub("%s+", ""):lower()
-                    if #txt >= 2 and #txt <= 5 and not txt:find("turn") and not txt:find("быстро") and not txt:find("ходи") then
-                        return txt
-                    end
-                end
-            end
-        end
-    end
-    return nil
-end
-
+-- === ДЕТЕКТОР (GETGC + PLAYERGUI) ===
 local function getGameStatus()
-    local prompt = getChunk()
-    if not prompt or prompt == "" then return nil, false end
-    
+    local prompt = nil
     local isMyTurn = false
-    local localPlayer = Players.LocalPlayer
-    if localPlayer then
-        local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-        if playerGui then
-            for _, v in pairs(playerGui:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Visible and v.Parent.Name ~= "Rayfield" then
-                    local text = v.Text:lower()
-                    if string.find(text, "quick") or string.find(text, "быстро") or string.find(text, "your turn") or string.find(text, "ходи") then
-                        isMyTurn = true
-                        break
+
+    -- 1. Метод через Память Игры (getgc)
+    pcall(function()
+        for _, v in pairs(getgc()) do
+            if type(v) == "function" and debug.getinfo(v).name == "updateInfoFrame" then
+                for __, vv in pairs(debug.getupvalues(v)) do
+                    if type(vv) == "table" then
+                        if vv.Prompt ~= nil then
+                            prompt = tostring(vv.Prompt):gsub("%s+", ""):lower()
+                        end
+                        if vv.PlayerID ~= nil and vv.PlayerID == Players.LocalPlayer.UserId then
+                            isMyTurn = true
+                        end
                     end
                 end
             end
         end
+    end)
+
+    -- 2. Запасной метод через UI (если getgc не дал промпт)
+    if not prompt or prompt == "" then
+        local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if playerGui then
+            local promptLbl = playerGui:FindFirstChild("PromptLabel", true)
+            if promptLbl and promptLbl.Text ~= "" then
+                prompt = promptLbl.Text:gsub("%s+", ""):lower()
+            end
+        end
     end
+
     return prompt, isMyTurn
 end
 
