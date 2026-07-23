@@ -297,8 +297,26 @@ local function removeFromGlobalWords(word)
     end
 end
 
--- === НАДЕЖНЫЙ ДЕТЕКТОР ПРОМПТА И ХОДА ===
+-- ===== ЗАМЕНА: улучшённый getGameStatus с валидацией видимости prompt в UI =====
 local cachedInfoUpvalues = nil
+
+local function promptVisibleInGUI(prompt)
+    if not prompt or prompt == "" then return false end
+    local playerGui = Players.LocalPlayer and Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return false end
+
+    local needle = tostring(prompt):gsub("%s+", ""):lower()
+    for _, v in pairs(playerGui:GetDescendants()) do
+        if v:IsA("TextLabel") and v.Visible and v.Text and v.Text ~= "" then
+            local txt = v.Text:gsub("%s+", ""):lower()
+            if txt:find(needle, 1, true) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 local function findUpdateInfoUpvaluesOnce()
     if cachedInfoUpvalues then return cachedInfoUpvalues end
     pcall(function()
@@ -318,17 +336,28 @@ local function findUpdateInfoUpvaluesOnce()
     return cachedInfoUpvalues
 end
 
+local function isWaitingLikeText(t)
+    if not t or t == "" then return false end
+    local s = tostring(t):lower()
+    -- ключевые слова для окончания раунда / ожидания (англ + рус)
+    local bad = {"waiting", "wait", "press", "game over", "round over", "end", "finished", "finish", "подождите", "ожидайте", "конец", "конецраунда", "игра закончена", "дождитесь", "заверш"}
+    for _, kw in ipairs(bad) do
+        if s:find(kw, 1, true) then return true end
+    end
+    return false
+end
+
 local function getGameStatus()
     local prompt = nil
     local isMyTurn = false
 
-    -- Попробуем сначала использовать закэшированные upvalues
+    -- 1) Попытка через кэш upvalues (быстро)
     local upvalues = findUpdateInfoUpvaluesOnce()
     if upvalues then
         pcall(function()
-            for __, vv in pairs(upvalues) do
+            for _, vv in pairs(upvalues) do
                 if type(vv) == "table" then
-                    if vv.Prompt ~= nil then
+                    if vv.Prompt ~= nil and tostring(vv.Prompt) ~= "" then
                         prompt = tostring(vv.Prompt):gsub("%s+", ""):lower()
                     end
                     if vv.PlayerID ~= nil and vv.PlayerID == Players.LocalPlayer.UserId then
@@ -339,24 +368,51 @@ local function getGameStatus()
         end)
     end
 
-    -- Если не найдено — fallback к PlayerGui
+    -- 2) Фолбэк через PlayerGui, если не найден или пуст
     if (not prompt or prompt == "") then
-        local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
-        if playerGui then
-            local promptLbl = playerGui:FindFirstChild("PromptLabel", true)
-            if promptLbl and promptLbl.Text ~= "" then
-                prompt = promptLbl.Text:gsub("%s+", ""):lower()
+        pcall(function()
+            local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+            if playerGui then
+                local promptLbl = playerGui:FindFirstChild("PromptLabel", true)
+                if promptLbl and promptLbl.Text ~= "" then
+                    prompt = promptLbl.Text:gsub("%s+", ""):lower()
+                else
+                    -- более общий поиск через текстовые метки (если конкретный PromptLabel отсутствует)
+                    for _, v in pairs(playerGui:GetDescendants()) do
+                        if v:IsA("TextLabel") and v.Visible and v.Text and #v.Text > 0 then
+                            local txt = v.Text:gsub("%s+", ""):lower()
+                            -- heurистика: короткий текст 2..6 символов скорее всего промпт
+                            if #txt >= 2 and #txt <= 6 and not txt:find("turn") and not txt:find("ход") then
+                                prompt = txt
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+    end
+
+    -- 3) Проверка: действительно ли найденный prompt видим в GUI; если нет — считаем его отсутствующим
+    if prompt and prompt ~= "" then
+        if not promptVisibleInGUI(prompt) then
+            -- если текст похож на "waiting"/"press"/"game over" и не видим — тоже считаем отсутствующим
+            if isWaitingLikeText(prompt) then
+                prompt = nil
+            else
+                -- часто upvalues могут хранить устаревший prompt; если он не виден в GUI — сбрасываем
+                prompt = nil
             end
         end
     end
 
-    -- Проверка на ход игрока через UI (fallback)
+    -- 4) Проверка флага хода через UI как дополнительный источник (fallback)
     if not isMyTurn then
         pcall(function()
             local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
             if playerGui then
                 for _, v in pairs(playerGui:GetDescendants()) do
-                    if v:IsA("TextLabel") and v.Visible and v.Parent and v.Text then
+                    if v:IsA("TextLabel") and v.Visible and v.Text then
                         local txt = v.Text:lower()
                         if txt:find("quick") or txt:find("your turn") or txt:find("ходи") or txt:find("быстро") then
                             isMyTurn = true
