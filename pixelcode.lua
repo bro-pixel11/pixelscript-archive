@@ -409,17 +409,21 @@ local function typeWordMobile(word, targetPrompt)
     isTyping = false 
 end
 
--- === МОДИФИЦИРОВАННАЯ ЛОГИКА ПОИСКА ===
+-- === МОДИФИЦИРОВАННАЯ ЛОГИКА ПОИСКА И АВТО-ОЧИСТКИ ===
 function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    if not contains then 
-        lastChunk = "" 
-        wasMyTurn = false
-        promptLabel:Set("Current Prompt: None")
-        solutionsLabel:Set("Solutions Found: 0")
-        matchLabel:Set("Current Match: None")
+    -- ЕСЛИ ПРОМПТ ИСЧЕЗ (РАУНД ОКОНЧЕН) — АВТОМАТИЧЕСКИ СБРАСЫВАЕМ ВСЁ
+    if not contains or contains == "" then 
+        if lastChunk ~= "" or next(sessionUsedWords) ~= nil then
+            sessionUsedWords = {} 
+            lastChunk = "" 
+            wasMyTurn = false
+            if promptLabel then promptLabel:Set("Current Prompt: None") end
+            if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
+            if matchLabel then matchLabel:Set("Current Match: Cleared (Game Over)") end
+        end
         return 
     end
 
@@ -483,7 +487,7 @@ function copyword(bruteforce)
     end
 end
 
--- === ФОНОВЫЙ ПОТОК AUTO JOIN + БЕЗОПАСНЫЙ СБРОС ПАМЯТИ ===
+-- === ФОНОВЫЙ ПОТОК AUTO JOIN ===
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
@@ -497,14 +501,9 @@ if Games then
                     end)
 
                     task.wait(1) 
-                    
                     sessionUsedWords = {} 
                     lastChunk = ""
                     wasMyTurn = false
-                    
-                    if promptLabel then promptLabel:Set("Current Prompt: None") end
-                    if matchLabel then matchLabel:Set("Current Match: Cleared (New Game)") end
-                    print("🚪 [Auto-Join]: Зашли в комнату:", gameRoomID, "| Память и промпт очищены")
                 end)
             end
         end)
