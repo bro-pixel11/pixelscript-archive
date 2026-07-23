@@ -132,7 +132,7 @@ local function loadDictionaryAsync(url)
     end)
 end
 
-loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/fullwords/main/full_dict.txt")
+loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt")
 
 -- === STATE & SETTINGS ===
 local sessionUsedWords = {}
