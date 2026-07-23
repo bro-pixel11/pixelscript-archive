@@ -284,19 +284,21 @@ MainTab:CreateSection("------------------")
 local cachedUpvalueTable = nil
 
 local function getChunk()
-    -- Всегда проверяем валидность таблицы
+    if cachedUpvalueTable and not pcall(function() return cachedUpvalueTable.Prompt end) then
+        cachedUpvalueTable = nil
+    end
+
     if cachedUpvalueTable and cachedUpvalueTable.Prompt and cachedUpvalueTable.Prompt ~= "" then
         return tostring(cachedUpvalueTable.Prompt):lower()
     end
 
-    -- Если таблица устарела или очистилась, ищем заново в памяти
     cachedUpvalueTable = nil
     for _, v in pairs(getgc(true)) do
         if type(v) == "function" then
             local info = debug.getinfo(v)
             if info and info.name == "updateInfoFrame" then
                 for _, up in pairs(debug.getupvalues(v)) do
-                    if type(up) == "table" and up.Prompt then 
+                    if type(up) == "table" and up.Prompt and up.Prompt ~= "" then 
                         cachedUpvalueTable = up
                         return tostring(up.Prompt):lower() 
                     end
@@ -413,30 +415,34 @@ local function typeWordMobile(word, targetPrompt)
     isTyping = false 
 end
 
--- === МОДИФИЦИРОВАННАЯ ЛОГИКА ПОИСКА И АВТО-ОЧИСТКИ ===
+-- === ЛОГИКА ПОИСКА И РЕЖИМ WAITING ===
 function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    -- ЕСЛИ СЛОГ ПРОПАЛ ИЛИ ИЗМЕНИЛСЯ НА ПУСТОТУ — СБРАСЫВАЕМ ВСЁ
+    -- === РЕЖИМ WAITING: Когда промпта нет (раунд окончен / пауза между играми) ===
     if not contains or contains == "" then 
-        if lastChunk ~= "" or next(sessionUsedWords) ~= nil then
+        if lastChunk ~= "WAITING" then
             sessionUsedWords = {} 
-            lastChunk = "" 
-            cachedUpvalueTable = nil -- Сбрасываем старую ссылку из GC
+            lastChunk = "WAITING" 
+            cachedUpvalueTable = nil
             wasMyTurn = false
-            if promptLabel then promptLabel:Set("Current Prompt: None") end
+            
+            if promptLabel then promptLabel:Set("Current Prompt: WAITING...") end
             if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
-            if matchLabel then matchLabel:Set("Current Match: Cleared") end
+            if matchLabel then matchLabel:Set("Current Match: Waiting for game...") end
         end
         return 
     end
 
+    -- === РЕЖИМ ИГРЫ: Появился новый промпт ===
     local turnSwitchedToMe = (isMyTurn and not wasMyTurn)
     wasMyTurn = isMyTurn
 
     local currentTime = os.clock()
-    if currentTime - lastTypeTime > 4 then lastChunk = "" end
+    if currentTime - lastTypeTime > 4 then 
+        if lastChunk ~= "WAITING" then lastChunk = "" end 
+    end
 
     if lastChunk ~= contains or bruteforce or turnSwitchedToMe then
         lastChunk = contains
@@ -507,8 +513,8 @@ if Games then
 
                     task.wait(1) 
                     sessionUsedWords = {} 
-                    lastChunk = ""
-                    cachedUpvalueTable = nil -- При перезаходе сбрасываем ссылку GC
+                    lastChunk = "WAITING"
+                    cachedUpvalueTable = nil
                     wasMyTurn = false
                 end)
             end
