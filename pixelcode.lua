@@ -84,7 +84,7 @@ local Window = Rayfield:CreateWindow({
 
    ConfigurationSaving = { Enabled = false },
    KeySystem = false,
-   Size = UDim2.fromOffset(340, 280),
+   Size = UDim2.fromOffset(340, 260),
    
    CustomTheme = {
         TextColor = Color3.fromRGB(255, 255, 255),
@@ -140,19 +140,19 @@ local autosearch = false
 local autotype = false
 local instanttype = false
 local autojoin = false
-local autoJoinDelay = 2 
-local jitterEnabled = false 
-local jitterIntensity = 0.05 
+local autoJoinDelay = 3 
+local jitterEnabled = true 
+local jitterIntensity = 0.16 
 local lastChunk = ""
 local lastTypeTime = 0
 local wasMyTurn = false
 local isTyping = false 
 
-local checkWordDelay = 1.0 
+local checkWordDelay = 0.5 
 local startTime = os.time()
 local totalTurns = 0
 
-local typingWPM = 500
+local typingWPM = 250
 local speedWordDelay = 60 / (typingWPM * 5)
 
 local Vim = game:GetService("VirtualInputManager")
@@ -220,14 +220,6 @@ MainTab:CreateButton({
     Callback = function() copyword(true) end 
 })
 
-MainTab:CreateButton({ 
-    Name = "🗑️ Clear Memory", 
-    Callback = function() 
-        sessionUsedWords = {}
-        if matchLabel then matchLabel:Set("Current Match: Cleared") end 
-    end 
-})
-
 -- === UI ELEMENTS (SETTINGS TAB) ===
 SettingsTab:CreateSlider({
    Name = "Auto Join Delay",
@@ -235,7 +227,7 @@ SettingsTab:CreateSlider({
    Range = {1, 5},
    Increment = 1,
    Suffix = " sec",
-   CurrentValue = 2,
+   CurrentValue = 3,
    Callback = function(Value) autoJoinDelay = Value end,
 })
 
@@ -245,7 +237,7 @@ SettingsTab:CreateSlider({
    Range = {1, 20}, 
    Increment = 1,
    Suffix = " (x0.1 sec)",
-   CurrentValue = 10, 
+   CurrentValue = 5, 
    Callback = function(Value) checkWordDelay = Value / 10 end,
 })
 
@@ -255,7 +247,7 @@ SettingsTab:CreateSlider({
    Range = {100, 1000},
    Increment = 50,
    Suffix = " WPM",
-   CurrentValue = 500,
+   CurrentValue = 250,
    Callback = function(Value)
       typingWPM = Value
       speedWordDelay = 60 / (typingWPM * 5)
@@ -264,7 +256,7 @@ SettingsTab:CreateSlider({
 
 SettingsTab:CreateToggle({
    Name = "Human Jittering",
-   CurrentValue = false,
+   CurrentValue = true,
    Info = "Slight realistic delay fluctuations",
    Callback = function(Value) jitterEnabled = Value end,
 })
@@ -272,10 +264,10 @@ SettingsTab:CreateToggle({
 SettingsTab:CreateSlider({
    Name = "Jitter Delay",
    Info = "Jittering strength",
-   Range = {1, 20}, 
+   Range = {1, 50}, 
    Increment = 1,
    Suffix = " ms", 
-   CurrentValue = 5, 
+   CurrentValue = 16, 
    Callback = function(Value) jitterIntensity = Value / 100 end,
 })
 
@@ -504,12 +496,15 @@ if Games then
                         Games.GameEvent:FireServer(gameRoomID, "JoinGame") 
                     end)
 
-                    -- Безопасное ожидание перерисовки GUI игры
                     task.wait(1) 
                     
-                    sessionUsedWords = {} -- Очистка гарантированно после смены UI
+                    sessionUsedWords = {} 
+                    lastChunk = ""
+                    wasMyTurn = false
+                    
+                    if promptLabel then promptLabel:Set("Current Prompt: None") end
                     if matchLabel then matchLabel:Set("Current Match: Cleared (New Game)") end
-                    print("🚪 [Auto-Join]: Зашли в комнату:", gameRoomID, "| Память слов гарантированно очищена")
+                    print("🚪 [Auto-Join]: Зашли в комнату:", gameRoomID, "| Память и промпт очищены")
                 end)
             end
         end)
