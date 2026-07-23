@@ -35,7 +35,6 @@ local function authenticate()
         return false, "Неверный ключ доступа!"
     end
 
-    -- Если в auth.json указан массив (список) из нескольких HWID
     if type(registeredHWID) == "table" then
         for _, allowedHWID in ipairs(registeredHWID) do
             if allowedHWID == userHWID then
@@ -45,7 +44,6 @@ local function authenticate()
         return false, "Ваш HWID не найден в списке разрешённых!\nВаш HWID: " .. tostring(userHWID)
     end
 
-    -- Если в auth.json указана одиночная строка HWID
     if registeredHWID == userHWID then
         return true, "Успешно!"
     end
@@ -85,7 +83,7 @@ local Window = Rayfield:CreateWindow({
    DisableBuildWarnings = false,
 
    ConfigurationSaving = { Enabled = false },
-   KeySystem = false, -- Отключено, так как проверка прошла перед запуском
+   KeySystem = false,
    Size = UDim2.fromOffset(340, 280),
    
    CustomTheme = {
@@ -102,7 +100,7 @@ local Window = Rayfield:CreateWindow({
 local MainTab = Window:CreateTab("🪐 Main", nil)
 local SettingsTab = Window:CreateTab("⚙️ Settings", nil)
 
-local statusLabel = MainTab:CreateLabel("⏳ Loading and indexing 282k dictionary...")
+local statusLabel = MainTab:CreateLabel("⏳ Loading dictionary...")
 
 -- Основная база слов
 local globalWordsList = {} 
@@ -132,6 +130,7 @@ local function loadDictionaryAsync(url)
     end)
 end
 
+-- Ссылка на актуальный словарь
 loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt")
 
 -- === STATE & SETTINGS ===
@@ -177,7 +176,10 @@ MainTab:CreateToggle({
       autosearch = Value
       if autosearch then
           task.spawn(function()
-              while autosearch do task.wait(0.05); pcall(copyword) end
+              while autosearch do 
+                  task.wait(0.2)
+                  pcall(copyword) 
+              end
           end)
       end
    end,
@@ -203,7 +205,6 @@ MainTab:CreateToggle({
         if autojoin and Games then
             task.spawn(function()
                 if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
-                sessionUsedWords = {} 
                 pcall(function()
                     for i = -1, -20, -1 do 
                         Games.GameEvent:FireServer(i, "JoinGame") 
@@ -288,13 +289,22 @@ local matchLabel = MainTab:CreateLabel("Current Match: None")
 MainTab:CreateSection("------------------")
 
 -- === HELPERS ===
+local cachedUpvalueTable = nil
+
 local function getChunk()
+    if cachedUpvalueTable and cachedUpvalueTable.Prompt then
+        return tostring(cachedUpvalueTable.Prompt):lower()
+    end
+
     for _, v in pairs(getgc(true)) do
         if type(v) == "function" then
             local info = debug.getinfo(v)
             if info and info.name == "updateInfoFrame" then
                 for _, up in pairs(debug.getupvalues(v)) do
-                    if type(up) == "table" and up.Prompt then return tostring(up.Prompt):lower() end
+                    if type(up) == "table" and up.Prompt then 
+                        cachedUpvalueTable = up
+                        return tostring(up.Prompt):lower() 
+                    end
                 end
             end
         end
@@ -481,7 +491,7 @@ function copyword(bruteforce)
     end
 end
 
--- === ФОНОВЫЙ ПОТОК AUTO JOIN + СБРОС ПАМЯТИ ===
+-- === ФОНОВЫЙ ПОТОК AUTO JOIN + БЕЗОПАСНЫЙ СБРОС ПАМЯТИ ===
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
@@ -492,19 +502,25 @@ if Games then
                     
                     pcall(function() 
                         Games.GameEvent:FireServer(gameRoomID, "JoinGame") 
-                        sessionUsedWords = {}
-                        if matchLabel then matchLabel:Set("Current Match: Cleared (New Game)") end
-                        print("🚪 [Auto-Join]: Зашли в комнату:", gameRoomID, "| Память слов очищена")
                     end)
+
+                    -- Безопасное ожидание перерисовки GUI игры
+                    task.wait(1) 
+                    
+                    sessionUsedWords = {} -- Очистка гарантированно после смены UI
+                    if matchLabel then matchLabel:Set("Current Match: Cleared (New Game)") end
+                    print("🚪 [Auto-Join]: Зашли в комнату:", gameRoomID, "| Память слов гарантированно очищена")
                 end)
             end
         end)
     end
 end
 
--- === ANTI-DUPE ===
+-- === ANTI-DUPE (ОПТИМИЗИРОВАН) ===
 task.spawn(function()
-    while task.wait(0.3) do
+    while task.wait(0.8) do
+        if not autosearch then continue end
+        
         local localPlayer = Players.LocalPlayer
         local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
         local gameGui = playerGui and (playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI"))
@@ -517,7 +533,6 @@ task.spawn(function()
                         local lowerWord = text:lower()
                         if not sessionUsedWords[lowerWord] then
                             sessionUsedWords[lowerWord] = true
-                            print("🔥 [Anti-Dupe]: " .. lowerWord)
                         end
                     end
                 end
