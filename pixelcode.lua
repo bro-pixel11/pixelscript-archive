@@ -93,7 +93,7 @@ local autojoin = false
 local autoJoinDelay = 3
 
 local typingWPM = 250
-local checkWordDelay = 0.5
+local checkWordDelay = 0.2
 local minLen = 1
 local maxLen = 99
 local typoChance = 0
@@ -103,7 +103,6 @@ local burstCounter = 0
 local burstTarget = math.random(3, 7)
 
 local lastChunk = ""
-local lastTypeTime = 0
 local wasMyTurn = false
 local isTyping = false
 
@@ -235,7 +234,7 @@ SettingsTab:CreateSlider({
    Range = {1, 20}, 
    Increment = 1,
    Suffix = " (x0.1 sec)",
-   CurrentValue = 5, 
+   CurrentValue = 2, 
    Callback = function(Value) checkWordDelay = Value / 10 end,
 })
 
@@ -267,12 +266,11 @@ local function GetLetterDelay()
     return math.max(base, 0.005)
 end
 
--- === ДЕТЕКТОР (GETGC + PLAYERGUI) ===
+-- === НАДЕЖНЫЙ ДЕТЕКТОР ПРОМПТА И ХОДА ===
 local function getGameStatus()
     local prompt = nil
     local isMyTurn = false
 
-    -- 1. Метод через Память Игры (getgc)
     pcall(function()
         for _, v in pairs(getgc()) do
             if type(v) == "function" and debug.getinfo(v).name == "updateInfoFrame" then
@@ -290,7 +288,6 @@ local function getGameStatus()
         end
     end)
 
-    -- 2. Запасной метод через UI (если getgc не дал промпт)
     if not prompt or prompt == "" then
         local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
         if playerGui then
@@ -308,19 +305,24 @@ local function SimulateKey(char)
     local keyCode = Enum.KeyCode[char:upper()]
     if char == "-" then keyCode = Enum.KeyCode.Minus end
     if char == "'" then keyCode = Enum.KeyCode.Quote end
-    if char == "\n" then keyCode = Enum.KeyCode.Return end
     
     if keyCode then
         Vim:SendKeyEvent(true, keyCode, false, game)
-        task.wait(0.005)
+        task.wait(0.002)
         Vim:SendKeyEvent(false, keyCode, false, game)
     end
 end
 
 local function SimulateBackspace()
     Vim:SendKeyEvent(true, Enum.KeyCode.Backspace, false, game)
-    task.wait(0.005)
+    task.wait(0.002)
     Vim:SendKeyEvent(false, Enum.KeyCode.Backspace, false, game)
+end
+
+local function PressEnter()
+    Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+    task.wait(0.01)
+    Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
 end
 
 -- === ПЕЧАТЬ ===
@@ -328,43 +330,42 @@ local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
     
-    if not instanttype and checkWordDelay > 0 then task.wait(checkWordDelay) end
-    
-    local currentPrompt, isMyTurn = getGameStatus()
-    if currentPrompt ~= targetPrompt or not isMyTurn then
-        isTyping = false
-        return
-    end
-
-    for i = 1, #word do
-        local checkPrompt, checkTurn = getGameStatus()
-        if checkPrompt ~= targetPrompt or not checkTurn then break end
+    pcall(function()
+        if not instanttype and checkWordDelay > 0 then task.wait(checkWordDelay) end
         
-        local char = string.sub(word, i, i)
-        
-        if not instanttype and typoChance > 0 and math.random() < typoChance then
-            local lower = string.lower(char)
-            local typoKey = TypoNeighbours[lower] or lower
-            SimulateKey(typoKey)
-            task.wait(GetLetterDelay())
-            SimulateBackspace()
-            task.wait(0.02)
-            SimulateKey(char)
-        else
-            SimulateKey(char)
+        local currentPrompt, isMyTurn = getGameStatus()
+        if currentPrompt ~= targetPrompt or not isMyTurn then
+            return
         end
 
-        if not instanttype then
-            task.wait(GetLetterDelay())
+        for i = 1, #word do
+            local checkPrompt, checkTurn = getGameStatus()
+            if checkPrompt ~= targetPrompt or not checkTurn then break end
+            
+            local char = string.sub(word, i, i)
+            
+            if not instanttype and typoChance > 0 and math.random() < typoChance then
+                local lower = string.lower(char)
+                local typoKey = TypoNeighbours[lower] or lower
+                SimulateKey(typoKey)
+                task.wait(GetLetterDelay())
+                SimulateBackspace()
+                task.wait(0.02)
+                SimulateKey(char)
+            else
+                SimulateKey(char)
+            end
+
+            if not instanttype then
+                task.wait(GetLetterDelay())
+            end
         end
-    end
-    
-    local finalPrompt, finalTurn = getGameStatus()
-    if finalPrompt == targetPrompt and finalTurn then
-        SimulateKey("\n")
+        
+        task.wait(0.02)
+        PressEnter()
         totalTurns = totalTurns + 1
         turnsLabel:Set("Total Turns: " .. totalTurns)
-    end
+    end)
     
     isTyping = false 
 end
@@ -389,14 +390,8 @@ function copyword(bruteforce)
     local turnSwitchedToMe = (isMyTurn and not wasMyTurn)
     wasMyTurn = isMyTurn
 
-    local currentTime = os.clock()
-    if currentTime - lastTypeTime > 4 then 
-        if lastChunk ~= "WAITING" then lastChunk = "" end 
-    end
-
     if lastChunk ~= contains or bruteforce or turnSwitchedToMe then
         lastChunk = contains
-        lastTypeTime = currentTime
         promptLabel:Set("Current Prompt: " .. contains:upper())
 
         local promptLower = contains:lower()
@@ -419,10 +414,10 @@ function copyword(bruteforce)
         solutionsLabel:Set("Solutions Found: " .. (count >= 5 and "5+" or count))
 
         if finalword then
-            sessionUsedWords[finalword] = true
             matchLabel:Set("Current Match: " .. finalword:upper())
             
             if autotype and isMyTurn then
+                sessionUsedWords[finalword] = true
                 task.spawn(function()
                     typeWordMobile(finalword, promptLower)
                 end)
@@ -436,8 +431,8 @@ end
 
 -- === ФОНОВЫЙ ЦИКЛ ПОИСКА И ПЕЧАТИ ===
 task.spawn(function()
-    while task.wait(0.2) do
-        if autotype then
+    while task.wait(0.15) do
+        if autotype or autojoin then
             pcall(function()
                 copyword(false)
             end)
