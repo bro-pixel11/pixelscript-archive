@@ -281,25 +281,36 @@ local matchLabel = MainTab:CreateLabel("Current Match: None")
 MainTab:CreateSection("------------------")
 
 -- === HELPERS ===
-local cachedUpvalueTable = nil
 
+-- Мгновенное чтение промпта напрямую из UI без задержек GC
 local function getChunk()
-    if cachedUpvalueTable and not pcall(function() return cachedUpvalueTable.Prompt end) then
-        cachedUpvalueTable = nil
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then return nil end
+    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+
+    -- 1. Поиск слога напрямую из PlayerGui
+    for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "MainUI"}) do
+        local gameGui = playerGui:FindFirstChild(guiName)
+        if gameGui then
+            for _, v in pairs(gameGui:GetDescendants()) do
+                if v:IsA("TextLabel") and v.Visible and v.Parent and (v.Parent.Name == "InfoFrame" or v.Name == "Prompt" or v.Name == "Frame") then
+                    local txt = v.Text:gsub("%s+", ""):lower()
+                    if #txt >= 2 and #txt <= 5 and not txt:find("turn") and not txt:find("быстро") and not txt:find("ходи") then
+                        return txt
+                    end
+                end
+            end
+        end
     end
 
-    if cachedUpvalueTable and cachedUpvalueTable.Prompt and cachedUpvalueTable.Prompt ~= "" then
-        return tostring(cachedUpvalueTable.Prompt):lower()
-    end
-
-    cachedUpvalueTable = nil
+    -- 2. Резервный метод через GC (если UI структуры изменены)
     for _, v in pairs(getgc(true)) do
         if type(v) == "function" then
             local info = debug.getinfo(v)
             if info and info.name == "updateInfoFrame" then
                 for _, up in pairs(debug.getupvalues(v)) do
                     if type(up) == "table" and up.Prompt and up.Prompt ~= "" then 
-                        cachedUpvalueTable = up
                         return tostring(up.Prompt):lower() 
                     end
                 end
@@ -415,17 +426,16 @@ local function typeWordMobile(word, targetPrompt)
     isTyping = false 
 end
 
--- === ЛОГИКА ПОИСКА И РЕЖИМ WAITING ===
+-- === ЛОГИКА ПОИСКА И ОЧИСТКИ (РЕЖИМ WAITING) ===
 function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    -- === РЕЖИМ WAITING: Когда промпта нет (раунд окончен / пауза между играми) ===
+    -- === РЕЖИМ WAITING: Когда раунд окончен или промпт отсутствует ===
     if not contains or contains == "" then 
         if lastChunk ~= "WAITING" then
             sessionUsedWords = {} 
             lastChunk = "WAITING" 
-            cachedUpvalueTable = nil
             wasMyTurn = false
             
             if promptLabel then promptLabel:Set("Current Prompt: WAITING...") end
@@ -435,7 +445,7 @@ function copyword(bruteforce)
         return 
     end
 
-    -- === РЕЖИМ ИГРЫ: Появился новый промпт ===
+    -- === РЕЖИМ ИГРЫ: Появился актуальный промпт ===
     local turnSwitchedToMe = (isMyTurn and not wasMyTurn)
     wasMyTurn = isMyTurn
 
@@ -514,7 +524,6 @@ if Games then
                     task.wait(1) 
                     sessionUsedWords = {} 
                     lastChunk = "WAITING"
-                    cachedUpvalueTable = nil
                     wasMyTurn = false
                 end)
             end
@@ -522,7 +531,7 @@ if Games then
     end
 end
 
--- === ANTI-DUPE (ОПТИМИЗИРОВАН) ===
+-- === ANTI-DUPE ===
 task.spawn(function()
     while task.wait(0.8) do
         if not autosearch then continue end
