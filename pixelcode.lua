@@ -148,6 +148,7 @@ local jitterIntensity = 0.05
 local rngVariationPercent = 0 
 
 local lastChunk = ""
+local ignorePrompt = ""
 local lastTypeTime = 0
 local wasMyTurn = false
 local isTyping = false 
@@ -325,9 +326,12 @@ local function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    -- Если раунд закончился или промпт отсутствует, сбрасываем память и ждем следующей игры
+    -- Если раунд закончился или промпта нет
     if not contains or contains == "" then 
         if lastChunk ~= "WAITING" then
+            if lastChunk ~= "" and lastChunk ~= "WAITING" then
+                ignorePrompt = lastChunk
+            end
             sessionUsedWords = {} 
             lastChunk = "WAITING" 
             wasMyTurn = false
@@ -340,9 +344,11 @@ local function copyword(bruteforce)
         return 
     end
 
-    if isMyTurn and not wasMyTurn and contains == lastChunk and lastChunk ~= "" and lastChunk ~= "WAITING" then
-        task.wait(0.1)
-        contains, isMyTurn = getGameStatus()
+    -- Защита: если промпт равен заблокированному с прошлого раунда, игнорируем его
+    if contains == ignorePrompt then
+        return
+    else
+        ignorePrompt = ""
     end
 
     wasMyTurn = isMyTurn
@@ -451,6 +457,7 @@ MainTab:CreateToggle({
                 if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
                 sessionUsedWords = {} 
                 lastChunk = "WAITING"
+                ignorePrompt = ""
                 wasMyTurn = false
                 cachedUpdateFunc = nil
                 isTyping = false
@@ -556,6 +563,9 @@ if Games then
 
                     task.wait(1)
                     sessionUsedWords = {}
+                    if lastChunk ~= "" and lastChunk ~= "WAITING" then
+                        ignorePrompt = lastChunk
+                    end
                     lastChunk = "WAITING"
                     wasMyTurn = false
                     cachedUpdateFunc = nil
