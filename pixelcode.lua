@@ -96,13 +96,10 @@ print("✅ Авторизация прошла успешно! Загрузка 
 
 getgenv().deletewhendupefound = true
 
--- Предварительное объявление UI элементов статистики
 local elapsedLabel, turnsLabel, promptLabel, solutionsLabel, matchLabel
 
--- Загрузка Rayfield UI
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
--- Создание окна
 local Window = Rayfield:CreateWindow({
     Name = "Bro-PixelScript (wordbomb)",
     LoadingTitle = "Bro-Pixel Loader",
@@ -126,16 +123,13 @@ local Window = Rayfield:CreateWindow({
     }
 })
 
--- Создание вкладок
 local MainTab = Window:CreateTab("Main", nil)
 local SettingsTab = Window:CreateTab("Settings", nil)
 
 local statusLabel = MainTab:CreateLabel("Loading and indexing dictionary...")
 
--- Основная база слов
 local globalWordsList = {} 
 
--- === АСИНХРОННАЯ ЗАГРУЗКА СЛОВАРЯ ===
 local function loadDictionaryAsync(url)
     task.spawn(function()
         local success, raw = pcall(function() return game:HttpGet(url) end)
@@ -187,6 +181,8 @@ local totalTurns = 0
 local typingWPM = 500
 local speedWordDelay = 60 / (typingWPM * 5)
 
+local cachedUpdateFunc = nil
+
 local function applyRngVariation(baseValue)
     if rngVariationPercent <= 0 then return baseValue end
     local factor = 1 + ((math.random() * 2 - 1) * (rngVariationPercent / 100))
@@ -194,9 +190,23 @@ local function applyRngVariation(baseValue)
     return result < 0 and 0 or result
 end
 
--- === ИНИЦИАЛИЗАЦИЯ СЕТЕВЫХ СОБЫТИЙ ДЛЯ AUTO JOIN ===
+-- === ИНИЦИАЛИЗАЦИЯ СЕТЕВЫХ СОБЫТИЙ ===
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
+
+-- === ПОЛНАЯ ОЧИСТКА СОСТОЯНИЯ РАУНДА ===
+local function resetRoundState()
+    typingSessionId = typingSessionId + 1 
+    sessionUsedWords = {} 
+    lastChunk = "WAITING"
+    wasMyTurn = false
+    isTyping = false
+    cachedUpdateFunc = nil 
+    
+    if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
+    if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
+    if matchLabel then matchLabel:Set("Current Match: Waiting...") end
+end
 
 -- === HELPERS & CORE LOGIC ===
 
@@ -249,8 +259,6 @@ local function isUpvalueBelongsToActiveGui(upvalueTable, activeGui)
     return not foundValidInstance
 end
 
-local cachedUpdateFunc = nil
-
 local function getChunk()
     local activeGui = isGameGuiActive()
     if not activeGui then
@@ -263,7 +271,7 @@ local function getChunk()
         local currentPrompt = nil
 
         local ok = pcall(function()
-            local upvalues = debug.getupvalues(cachedUpdateFunc)
+            local upvalues = debug_getupvalues(cachedUpdateFunc)
             if upvalues then
                 for _, up in pairs(upvalues) do
                     if type(up) == "table" and up.Prompt ~= nil then 
@@ -291,9 +299,9 @@ local function getChunk()
     for i = #gcObjects, 1, -1 do
         local v = gcObjects[i]
         if type(v) == "function" then
-            local info = debug.getinfo(v)
+            local info = debug_getinfo(v)
             if info and info.name == "updateInfoFrame" then
-                local upvalues = debug.getupvalues(v)
+                local upvalues = debug_getupvalues(v)
                 if upvalues then
                     for _, up in pairs(upvalues) do
                         if type(up) == "table" and up.Prompt ~= nil then 
@@ -327,7 +335,7 @@ local function getGameStatus()
         for _, v in pairs(playerGui:GetDescendants()) do
             if v:IsA("TextLabel") and v.Visible and v.Parent and v.Parent.Name ~= "Rayfield" then
                 local text = v.Text:lower()
-                if string.find(text, "quick") or string.find(text, "быстро") or string.find(text, "your turn") or string.find(text, "ходи") then
+                if string_find(text, "quick") or string_find(text, "быстро") or string_find(text, "your turn") or string_find(text, "ходи") then
                     isMyTurn = true
                     break
                 end
@@ -348,7 +356,7 @@ local function getGameTextBox()
     return nil
 end
 
--- === TYPING LOGIC (ЗАЩИТА ОТ ГОНОК И ПАРАЛЛЕЛЬНЫХ ПОТОКОВ) ===
+-- === TYPING LOGIC ===
 local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
@@ -386,7 +394,7 @@ local function typeWordMobile(word, targetPrompt)
         local checkPrompt, checkTurn = getGameStatus()
         if checkPrompt ~= targetPrompt or not checkTurn then break end
         
-        local char = string.sub(word, i, i)
+        local char = string_sub(word, i, i)
         local keyCode = nil
         
         if char == "-" then
@@ -448,27 +456,25 @@ local function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
+    -- 1. Если промпта нет вообще (катка завершилась / мы в лобби)
     if not contains or contains == "" then 
         if lastChunk ~= "WAITING" then
-            sessionUsedWords = {} 
-            lastChunk = "WAITING" 
-            wasMyTurn = false
-            cachedUpdateFunc = nil
-            
-            if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
-            if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
-            if matchLabel then matchLabel:Set("Current Match: Waiting for game...") end
+            resetRoundState()
         end
         return 
     end
 
-    wasMyTurn = isMyTurn
-    local currentTime = os.clock()
-
-    if currentTime - lastTypeTime > 5 and lastChunk == contains then
-        sessionUsedWords = {}
-        cachedUpdateFunc = nil
+    -- 2. Если промпт есть, но сейчас ХОД СОПЕРНИКА
+    if not isMyTurn then
+        -- Просто сбрасываем текущий промпт, чтобы на нашем следующем ходу 
+        -- скрипт прочитал новый слог. Таблицу sessionUsedWords НЕ трогаем!
+        lastChunk = "WAITING"
+        return
     end
+
+    -- 3. Наш ход! Работаем с поиском и вводом
+    wasMyTurn = true
+    local currentTime = os_clock()
 
     if lastChunk ~= contains or bruteforce then
         lastChunk = contains
@@ -482,8 +488,8 @@ local function copyword(bruteforce)
         for i = 1, #globalWordsList do
             local candidate = globalWordsList[i]
             if #candidate <= lettercap and not sessionUsedWords[candidate] then
-                if string.find(candidate, promptLower, 1, true) then
-                    if string.find(candidate, "-", 1, true) or string.find(candidate, "'", 1, true) then
+                if string_find(candidate, promptLower, 1, true) then
+                    if string_find(candidate, "-", 1, true) or string_find(candidate, "'", 1, true) then
                         table.insert(specialMatches, candidate)
                     else
                         table.insert(normalMatches, candidate)
@@ -497,7 +503,7 @@ local function copyword(bruteforce)
         local finalword = nil
         
         if #specialMatches > 0 then
-            finalword = specialMatches[math.random(1, #specialMatches)]
+            finalword = specialMatches[math_random(1, #specialMatches)]
         elseif #normalMatches > 0 then
             local shortestNormal = normalMatches[1]
             for i = 2, #normalMatches do
@@ -513,10 +519,10 @@ local function copyword(bruteforce)
             if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
             
             if autotype and isMyTurn and not isTyping then
-                task.spawn(function()
+                task_spawn(function()
                     typeWordMobile(finalword, promptLower)
                 end)
-                lastChunk = "" 
+                lastChunk = "WAITING" 
             end
         else
             if matchLabel then matchLabel:Set("Current Match: Not Found") end
@@ -528,7 +534,7 @@ end
 MainTab:CreateInput({
    Name = "Letter Cap",
    PlaceholderText = "Enter max letter count...",
-   Callback = function(Text) lettercap = tonumber(Text) or math.huge end,
+   Callback = function(Text) lettercap = tonumber(Text) or math_huge end,
 })
 
 MainTab:CreateToggle({
@@ -537,7 +543,7 @@ MainTab:CreateToggle({
    Callback = function(Value)
       autosearch = Value
       if autosearch then
-          task.spawn(function()
+          task_spawn(function()
               while autosearch do 
                   task.wait(0.15)
                   pcall(copyword) 
@@ -565,14 +571,9 @@ MainTab:CreateToggle({
     Callback = function(Value)
         autojoin = Value
         if autojoin and Games then
-            task.spawn(function()
+            task_spawn(function()
                 if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
-                typingSessionId = typingSessionId + 1
-                sessionUsedWords = {} 
-                lastChunk = "WAITING"
-                wasMyTurn = false
-                isTyping = false
-                cachedUpdateFunc = nil
+                resetRoundState()
                 pcall(function()
                     for i = -1, -20, -1 do 
                         Games.GameEvent:FireServer(i, "JoinGame") 
@@ -660,30 +661,19 @@ solutionsLabel = MainTab:CreateLabel("Solutions Found: 0")
 matchLabel = MainTab:CreateLabel("Current Match: None")
 MainTab:CreateSection("------------------")
 
--- === ФОНОВЫЙ ПОТОК AUTO JOIN ===
+-- === ФОНОВЫЙ ПОТОК AUTO JOIN С ПОЛНЫМ СБРОСОМ ===
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
+            resetRoundState()
+
             if autojoin then 
-                task.spawn(function()
+                task_spawn(function()
                     if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
-                    
-                    typingSessionId = typingSessionId + 1 
-                    sessionUsedWords = {} 
-                    lastChunk = "WAITING"
-                    wasMyTurn = false
-                    isTyping = false
-                    cachedUpdateFunc = nil 
-                    
                     pcall(function() 
                         Games.GameEvent:FireServer(gameRoomID, "JoinGame") 
                     end)
-
-                    task.wait(1)
-                    
-                    if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
-                    if matchLabel then matchLabel:Set("Current Match: Waiting...") end
                 end)
             end
         end)
@@ -691,7 +681,7 @@ if Games then
 end
 
 -- === ANTI-DUPE ===
-task.spawn(function()
+task_spawn(function()
     while task.wait(0.8) do
         if not autosearch then continue end
         
@@ -722,11 +712,11 @@ task.spawn(function()
 end)
 
 -- === TIMER LOOP ===
-task.spawn(function()
+task_spawn(function()
     while task.wait(1) do
-        local elapsed = os.time() - startTime
-        local hours = math.floor(elapsed / 3600)
-        local minutes = math.floor((elapsed % 3600) / 60)
+        local elapsed = os_time() - startTime
+        local hours = math_floor(elapsed / 3600)
+        local minutes = math_floor((elapsed % 3600) / 60)
         local seconds = elapsed % 60
         if elapsedLabel then
             elapsedLabel:Set(string.format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds))
