@@ -237,7 +237,7 @@ local function updateGuiCache()
         end
     end
 
-    -- Подключение события при изменении текста промпта (Основной триггер)
+    -- Подключение события при изменении текста промпта
     if cachedPromptLabel and not promptConnection then
         promptConnection = cachedPromptLabel:GetPropertyChangedSignal("Text"):Connect(function()
             if autosearch then
@@ -364,20 +364,48 @@ MainTab:CreateSection("------------------")
 local function getChunk()
     if cachedPromptLabel and cachedPromptLabel.Parent and cachedPromptLabel.Visible then
         local txt = string_lower(string_gsub(cachedPromptLabel.Text, "%s+", ""))
-        local len = #txt
-        if len >= 2 and len <= 5 and not string_find(txt, "turn") and not string_find(txt, "быстро") and not string_find(txt, "ходи") then
-            return txt
+        print("TEXT:", cachedPromptLabel.Text)
+
+        local chunk = txt:match("containing:([a-z]+)")
+        if chunk then
+            return chunk
         end
+
+        chunk = txt:match("containing:%s*([a-z]+)")
+        if chunk then
+            return chunk
+        end
+
+        chunk = txt:match("\n([a-z]+)")
+        if chunk then
+            return chunk
+        end
+
+        return nil
     end
 
     updateGuiCache()
 
     if cachedPromptLabel and cachedPromptLabel.Parent and cachedPromptLabel.Visible then
         local txt = string_lower(string_gsub(cachedPromptLabel.Text, "%s+", ""))
-        local len = #txt
-        if len >= 2 and len <= 5 and not string_find(txt, "turn") and not string_find(txt, "быстро") and not string_find(txt, "ходи") then
-            return txt
+        print("TEXT:", cachedPromptLabel.Text)
+
+        local chunk = txt:match("containing:([a-z]+)")
+        if chunk then
+            return chunk
         end
+
+        chunk = txt:match("containing:%s*([a-z]+)")
+        if chunk then
+            return chunk
+        end
+
+        chunk = txt:match("\n([a-z]+)")
+        if chunk then
+            return chunk
+        end
+
+        return nil
     end
 
     return nil
@@ -634,5 +662,20 @@ task.defer(function()
         local minutes = math_floor((elapsed % 3600) / 60)
         local seconds = elapsed % 60
         elapsedLabel:Set(string_format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds))
+    end
+end)
+
+-- === DEBUG PRINT ALL TEXTLABELS ===
+task.defer(function()
+    task_wait(5)
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if playerGui then
+        for _, v in ipairs(playerGui:GetDescendants()) do
+            if v:IsA("TextLabel") then
+                print(v:GetFullName())
+                print("TEXT:", v.Text)
+                print("--------------------")
+            end
+        end
     end
 end)
