@@ -464,6 +464,7 @@ function copyword(bruteforce)
     if not contains or contains == "" then 
         if lastChunk ~= "WAITING" then
             table_clear(sessionUsedWords)
+            print("[DEBUG] sessionUsedWords:", next(sessionUsedWords))
             lastChunk = "WAITING" 
             wasMyTurn = false
             
