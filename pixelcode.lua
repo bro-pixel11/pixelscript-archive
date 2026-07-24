@@ -1,17 +1,14 @@
 local RbxAnalytics = game:GetService("RbxAnalyticsService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
-local Vim = game:GetService("VirtualInputManager")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local LocalPlayer = Players.LocalPlayer
 local userHWID = RbxAnalytics:GetClientId()
 local KEYS_URL = "https://raw.githubusercontent.com/bro-pixel11/keys.json/main/auth.json"
 
 local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
 
 if not userProvidedKey or userProvidedKey == "" then
-    LocalPlayer:Kick("❌ Ошибка: Ключ не найден! Укажите getgenv().PixelKey = 'ВАШ_КЛЮЧ' перед loadstring.")
+    Players.LocalPlayer:Kick("❌ Ошибка: Ключ не найден! Укажите getgenv().PixelKey = 'ВАШ_КЛЮЧ' перед loadstring.")
     return
 end
 
@@ -38,6 +35,7 @@ local function authenticate()
         return false, "Неверный ключ доступа!"
     end
 
+    -- Если в auth.json указан массив (список) из нескольких HWID
     if type(registeredHWID) == "table" then
         for _, allowedHWID in ipairs(registeredHWID) do
             if allowedHWID == userHWID then
@@ -47,6 +45,7 @@ local function authenticate()
         return false, "Ваш HWID не найден в списке разрешённых!\nВаш HWID: " .. tostring(userHWID)
     end
 
+    -- Если в auth.json указана одиночная строка HWID
     if registeredHWID == userHWID then
         return true, "Успешно!"
     end
@@ -61,7 +60,7 @@ end
 local isAuthenticated, authMessage = authenticate()
 
 if not isAuthenticated then
-    LocalPlayer:Kick("🔒 [Bro-Pixel Auth]: " .. authMessage)
+    Players.LocalPlayer:Kick("🔒 [Bro-Pixel Auth]: " .. authMessage)
     error("[AUTH FAILED]: " .. authMessage)
     return
 end
@@ -71,6 +70,9 @@ print("✅ Авторизация прошла успешно! Загрузка 
 -- === ОСНОВНОЙ СКРИПТ ===
 
 getgenv().deletewhendupefound = true
+
+-- Предварительное объявление UI элементов статистики
+local elapsedLabel, turnsLabel, promptLabel, solutionsLabel, matchLabel
 
 -- Загрузка Rayfield UI
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -86,8 +88,8 @@ local Window = Rayfield:CreateWindow({
    DisableBuildWarnings = false,
 
    ConfigurationSaving = { Enabled = false },
-   KeySystem = false,
-   Size = UDim2.fromOffset(340, 260),
+   KeySystem = false, -- Отключено, так как проверка прошла перед запуском
+   Size = UDim2.fromOffset(340, 280),
    
    CustomTheme = {
         TextColor = Color3.fromRGB(255, 255, 255),
@@ -103,12 +105,12 @@ local Window = Rayfield:CreateWindow({
 local MainTab = Window:CreateTab("🪐 Main", nil)
 local SettingsTab = Window:CreateTab("⚙️ Settings", nil)
 
-local statusLabel = MainTab:CreateLabel("⏳ Loading dictionary...")
+local statusLabel = MainTab:CreateLabel("⏳ Loading and indexing 282k dictionary...")
 
 -- Основная база слов
 local globalWordsList = {} 
 
--- Асинхронная загрузка словаря
+-- === АСИНХРОННАЯ ЗАГРУЗКА СЛОВАРЯ ===
 local function loadDictionaryAsync(url)
     task.spawn(function()
         local success, raw = pcall(function() return game:HttpGet(url) end)
@@ -124,7 +126,7 @@ local function loadDictionaryAsync(url)
                 total = total + 1
                 table.insert(globalWordsList, word)
                 
-                if total % 10000 == 0 then
+                if total % 5000 == 0 then
                     task.wait()
                 end
             end
@@ -133,35 +135,271 @@ local function loadDictionaryAsync(url)
     end)
 end
 
-loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt")
+loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/fullwords/main/full_dict.txt")
 
 -- === STATE & SETTINGS ===
-local sessionUsedWords = {} -- Хэш-таблица O(1)
+local sessionUsedWords = {}
 local lettercap = math.huge
 local autosearch = false
 local autotype = false
 local instanttype = false
 local autojoin = false
-local autoJoinDelay = 3 
-local jitterEnabled = true 
-local jitterIntensity = 0.16 
+local autoJoinDelay = 2 
+local jitterEnabled = false 
+local jitterIntensity = 0.05 
+local rngVariationPercent = 0 -- Вариация от 0% до 100%
+
 local lastChunk = ""
 local lastTypeTime = 0
 local wasMyTurn = false
 local isTyping = false 
 
-local checkWordDelay = 0.5 
+local checkWordDelay = 1.0 
 local startTime = os.time()
 local totalTurns = 0
 
-local typingWPM = 250
+local typingWPM = 500
 local speedWordDelay = 60 / (typingWPM * 5)
 
--- Инициализация Network
+local Vim = game:GetService("VirtualInputManager")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Вспомогательная функция для генерации вариации в диапазоне [-rngVariationPercent, +rngVariationPercent]
+local function applyRngVariation(baseValue)
+    if rngVariationPercent <= 0 then return baseValue end
+    local factor = 1 + ((math.random() * 2 - 1) * (rngVariationPercent / 100))
+    local result = baseValue * factor
+    return result < 0 and 0 or result
+end
+
+-- === ИНИЦИАЛИЗАЦИЯ СЕТЕВЫХ СОБЫТИЙ ДЛЯ AUTO JOIN ===
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- UI Elements (Main)
+-- === HELPERS & CORE LOGIC ===
+local cachedUpdateFunc = nil
+
+local function getChunk()
+    if cachedUpdateFunc then
+        local ok, prompt = pcall(function()
+            for _, up in pairs(debug.getupvalues(cachedUpdateFunc)) do
+                if type(up) == "table" and up.Prompt then 
+                    return tostring(up.Prompt):lower() 
+                end
+            end
+        end)
+        if ok and prompt and prompt ~= "" then return prompt end
+        cachedUpdateFunc = nil
+    end
+
+    for _, v in pairs(getgc(true)) do
+        if type(v) == "function" then
+            local info = debug.getinfo(v)
+            if info and info.name == "updateInfoFrame" then
+                for _, up in pairs(debug.getupvalues(v)) do
+                    if type(up) == "table" and up.Prompt then
+                        cachedUpdateFunc = v
+                        return tostring(up.Prompt):lower() 
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function getGameStatus()
+    local prompt = getChunk()
+    if not prompt then return nil, false end
+    
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then return nil, false end
+    
+    local isMyTurn = false
+    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+    if playerGui then
+        for _, v in pairs(playerGui:GetDescendants()) do
+            if v:IsA("TextLabel") and v.Visible and v.Parent and v.Parent.Name ~= "Rayfield" then
+                local text = v.Text:lower()
+                if string.find(text, "quick") or string.find(text, "быстро") or string.find(text, "your turn") or string.find(text, "ходи") then
+                    isMyTurn = true
+                    break
+                end
+            end
+        end
+    end
+    return prompt, isMyTurn
+end
+
+local function getGameTextBox()
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then return nil end
+    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+    for _, v in pairs(playerGui:GetDescendants()) do
+        if v:IsA("TextBox") and v.Visible and v.Parent and v.Parent.Name ~= "Rayfield" then return v end
+    end
+    return nil
+end
+
+-- === TYPING LOGIC ===
+local function typeWordMobile(word, targetPrompt)
+    if isTyping then return end 
+    isTyping = true 
+    
+    -- Применяем RNG к задержке перед вводом
+    if not instanttype and checkWordDelay > 0 then 
+        local finalDelay = applyRngVariation(checkWordDelay)
+        task.wait(finalDelay) 
+    end
+    
+    local currentPrompt, isMyTurn = getGameStatus()
+    if currentPrompt ~= targetPrompt or not isMyTurn then
+        isTyping = false
+        return
+    end
+    
+    local textBox = getGameTextBox()
+    if textBox then 
+        textBox:CaptureFocus() 
+        task.wait(0.01)
+        textBox.Text = "" 
+        task.wait(0.01)
+    end
+    
+    for i = 1, #word do
+        local checkPrompt, checkTurn = getGameStatus()
+        if checkPrompt ~= targetPrompt or not checkTurn then break end
+        
+        local char = string.sub(word, i, i)
+        local keyCode = nil
+        
+        if char == "-" then
+            keyCode = Enum.KeyCode.Minus
+        elseif char == "'" then
+            keyCode = Enum.KeyCode.Quote
+        else
+            keyCode = Enum.KeyCode[char:upper()]
+        end
+        
+        if keyCode then
+            local currentDelay = speedWordDelay
+            
+            if instanttype then
+                currentDelay = 0
+            else
+                -- Применяем RNG вариацию к скорости нажатия каждого символа
+                currentDelay = applyRngVariation(speedWordDelay)
+                
+                if jitterEnabled then
+                    local currentJitter = applyRngVariation(jitterIntensity)
+                    local randomOffset = (math.random() * 2 - 1) * currentJitter
+                    currentDelay = currentDelay + randomOffset
+                end
+                
+                if currentDelay < 0.005 then currentDelay = 0.005 end
+            end
+            
+            if i == 1 and textBox and textBox.Text ~= "" then textBox.Text = "" end
+            
+            Vim:SendKeyEvent(true, keyCode, false, game)
+            if currentDelay > 0 then task.wait(currentDelay / 2) end
+            Vim:SendKeyEvent(false, keyCode, false, game)
+            if currentDelay > 0 then task.wait(currentDelay / 2) end
+        end
+    end
+    
+    local finalPrompt, finalTurn = getGameStatus()
+    if finalPrompt == targetPrompt and finalTurn then
+        if not instanttype then task.wait(0.02) end
+        Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+        if not instanttype then task.wait(0.01) end
+        Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+        if not instanttype then task.wait(0.03) end
+        totalTurns = totalTurns + 1
+        if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
+    else
+        if textBox then textBox.Text = "" end
+    end
+    
+    isTyping = false 
+end
+
+-- === ЛОГИКА ПОИСКА СЛОВ ===
+local function copyword(bruteforce)
+    if isTyping then return end
+    local contains, isMyTurn = getGameStatus()
+    
+    if not contains then 
+        lastChunk = "" 
+        wasMyTurn = false
+        if promptLabel then promptLabel:Set("Current Prompt: None") end
+        if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
+        if matchLabel then matchLabel:Set("Current Match: None") end
+        return 
+    end
+
+    local turnSwitchedToMe = (isMyTurn and not wasMyTurn)
+    wasMyTurn = isMyTurn
+
+    local currentTime = os.clock()
+    if currentTime - lastTypeTime > 4 then lastChunk = "" end
+
+    if lastChunk ~= contains or bruteforce or turnSwitchedToMe then
+        lastChunk = contains
+        lastTypeTime = currentTime
+        if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
+
+        local promptLower = contains:lower()
+        local specialMatches = {}
+        local normalMatches = {}
+        
+        for i = 1, #globalWordsList do
+            local candidate = globalWordsList[i]
+            if string.find(candidate, promptLower, 1, true) then
+                if not sessionUsedWords[candidate] and #candidate <= lettercap then
+                    if string.find(candidate, "-", 1, true) or string.find(candidate, "'", 1, true) then
+                        table.insert(specialMatches, candidate)
+                    else
+                        table.insert(normalMatches, candidate)
+                    end
+                end
+            end
+        end
+
+        if solutionsLabel then solutionsLabel:Set("Solutions Found: " .. (#specialMatches + #normalMatches)) end
+
+        local finalword = nil
+        
+        if #specialMatches > 0 then
+            finalword = specialMatches[math.random(1, #specialMatches)]
+        elseif #normalMatches > 0 then
+            local shortestNormal = normalMatches[1]
+            for i = 2, #normalMatches do
+                if #normalMatches[i] < #shortestNormal then
+                    shortestNormal = normalMatches[i]
+                end
+            end
+            finalword = shortestNormal
+        end
+
+        if finalword then
+            sessionUsedWords[finalword] = true
+            if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
+            
+            if autotype and isMyTurn then
+                task.spawn(function()
+                    typeWordMobile(finalword, promptLower)
+                end)
+                lastChunk = "" 
+            end
+        else
+            if matchLabel then matchLabel:Set("Current Match: Not Found") end
+        end
+    end
+end
+
+-- === UI ELEMENTS (MAIN TAB) ===
 MainTab:CreateInput({
    Name = "Letter Cap",
    PlaceholderText = "Enter max letter count...",
@@ -204,6 +442,7 @@ MainTab:CreateToggle({
         if autojoin and Games then
             task.spawn(function()
                 if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
+                sessionUsedWords = {} 
                 pcall(function()
                     for i = -1, -20, -1 do 
                         Games.GameEvent:FireServer(i, "JoinGame") 
@@ -219,14 +458,22 @@ MainTab:CreateButton({
     Callback = function() copyword(true) end 
 })
 
--- UI Elements (Settings)
+MainTab:CreateButton({ 
+    Name = "🗑️ Clear Memory", 
+    Callback = function() 
+        sessionUsedWords = {}
+        if matchLabel then matchLabel:Set("Current Match: Cleared") end 
+    end 
+})
+
+-- === UI ELEMENTS (SETTINGS TAB) ===
 SettingsTab:CreateSlider({
    Name = "Auto Join Delay",
    Info = "Delay before auto joining game (1s to 5s)",
    Range = {1, 5},
    Increment = 1,
    Suffix = " sec",
-   CurrentValue = 3,
+   CurrentValue = 2,
    Callback = function(Value) autoJoinDelay = Value end,
 })
 
@@ -236,7 +483,7 @@ SettingsTab:CreateSlider({
    Range = {1, 20}, 
    Increment = 1,
    Suffix = " (x0.1 sec)",
-   CurrentValue = 5, 
+   CurrentValue = 10, 
    Callback = function(Value) checkWordDelay = Value / 10 end,
 })
 
@@ -246,16 +493,28 @@ SettingsTab:CreateSlider({
    Range = {100, 1000},
    Increment = 50,
    Suffix = " WPM",
-   CurrentValue = 250,
+   CurrentValue = 500,
    Callback = function(Value)
       typingWPM = Value
       speedWordDelay = 60 / (typingWPM * 5)
    end,
 })
 
+SettingsTab:CreateSlider({
+   Name = "🎲 RNG Variation 🎲",
+   Info = "Random speed & delay variation (+-0% to +-100%)",
+   Range = {0, 100},
+   Increment = 5,
+   Suffix = "%",
+   CurrentValue = 0,
+   Callback = function(Value)
+      rngVariationPercent = Value
+   end,
+})
+
 SettingsTab:CreateToggle({
    Name = "Human Jittering",
-   CurrentValue = true,
+   CurrentValue = false,
    Info = "Slight realistic delay fluctuations",
    Callback = function(Value) jitterEnabled = Value end,
 })
@@ -263,243 +522,23 @@ SettingsTab:CreateToggle({
 SettingsTab:CreateSlider({
    Name = "Jitter Delay",
    Info = "Jittering strength",
-   Range = {1, 50}, 
+   Range = {1, 20}, 
    Increment = 1,
    Suffix = " ms", 
-   CurrentValue = 16, 
+   CurrentValue = 5, 
    Callback = function(Value) jitterIntensity = Value / 100 end,
 })
 
--- Stats Panel
-local StatsSection = MainTab:CreateSection("📊 Statistics 📊")
-local elapsedLabel = MainTab:CreateLabel("Elapsed Time: 00:00:00")
-local turnsLabel = MainTab:CreateLabel("Total Turns: 0")
-local promptLabel = MainTab:CreateLabel("Current Prompt: None")
-local solutionsLabel = MainTab:CreateLabel("Solutions Found: 0")
-local matchLabel = MainTab:CreateLabel("Current Match: None")
+-- === STATS PANEL ===
+MainTab:CreateSection("📊 Statistics 📊")
+elapsedLabel = MainTab:CreateLabel("Elapsed Time: 00:00:00")
+turnsLabel = MainTab:CreateLabel("Total Turns: 0")
+promptLabel = MainTab:CreateLabel("Current Prompt: None")
+solutionsLabel = MainTab:CreateLabel("Solutions Found: 0")
+matchLabel = MainTab:CreateLabel("Current Match: None")
 MainTab:CreateSection("------------------")
 
--- === ОПТИМИЗИРОВАННЫЙ КЭШ ДЛЯ GETGC (0% ПОТЕРЬ FPS) ===
-local cachedInfoTable = nil
-local cachedUpdateFunc = nil
-
-local function getGCInfoTable()
-    if cachedInfoTable and type(cachedInfoTable) == "table" and cachedInfoTable.Prompt ~= nil then
-        return cachedInfoTable
-    end
-
-    if cachedUpdateFunc then
-        for _, upv in ipairs(debug.getupvalues(cachedUpdateFunc)) do
-            if type(upv) == "table" and upv.Prompt ~= nil then
-                cachedInfoTable = upv
-                return upv
-            end
-        end
-    end
-
-    -- Тяжелый getgc(true) выполняется ТОЛЬКО ЕДИНОЖДЫ до нахождения таблицы
-    for _, v in pairs(getgc(true)) do
-        if type(v) == "function" then
-            local info = debug.getinfo(v)
-            if info and info.name == "updateInfoFrame" then
-                cachedUpdateFunc = v
-                for _, upv in ipairs(debug.getupvalues(v)) do
-                    if type(upv) == "table" and upv.Prompt ~= nil then
-                        cachedInfoTable = upv
-                        return upv
-                    end
-                end
-            end
-        end
-    end
-
-    return nil
-end
-
-local function getChunk()
-    local infoTable = getGCInfoTable()
-    if infoTable and infoTable.Prompt and infoTable.Prompt ~= "" then
-        local prompt = tostring(infoTable.Prompt):gsub("%s+", ""):lower()
-        if #prompt >= 2 and #prompt <= 5 then
-            return prompt
-        end
-    end
-    return nil
-end
-
-local function getGameStatus()
-    local prompt = getChunk()
-    if not prompt then return nil, false end
-    
-    local isMyTurn = false
-    local infoTable = getGCInfoTable()
-    
-    if infoTable and infoTable.PlayerID then
-        isMyTurn = (infoTable.PlayerID == LocalPlayer.UserId)
-    else
-        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-        if playerGui then
-            for _, v in pairs(playerGui:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Visible and v.Parent.Name ~= "Rayfield" then
-                    local text = v.Text:lower()
-                    if text:find("quick") or text:find("быстро") or text:find("your turn") or text:find("ходи") then
-                        isMyTurn = true
-                        break
-                    end
-                end
-            end
-        end
-    end
-
-    return prompt, isMyTurn
-end
-
-local function getGameTextBox()
-    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return nil end
-    for _, v in pairs(playerGui:GetDescendants()) do
-        if v:IsA("TextBox") and v.Visible and v.Parent.Name ~= "Rayfield" then return v end
-    end
-    return nil
-end
-
--- === ВВОД СЛОВА ===
-local function typeWordMobile(word, targetPrompt)
-    if isTyping then return end 
-    isTyping = true 
-    
-    if not instanttype and checkWordDelay > 0 then task.wait(checkWordDelay) end
-    
-    local currentPrompt, isMyTurn = getGameStatus()
-    if currentPrompt ~= targetPrompt or not isMyTurn then
-        isTyping = false
-        return
-    end
-    
-    local textBox = getGameTextBox()
-    if textBox then 
-        textBox:CaptureFocus() 
-        task.wait(0.01)
-        textBox.Text = "" 
-        task.wait(0.01)
-    end
-    
-    for i = 1, #word do
-        local checkPrompt, checkTurn = getGameStatus()
-        if checkPrompt ~= targetPrompt or not checkTurn then break end
-        
-        local char = word:sub(i, i)
-        local keyCode = (char == "-") and Enum.KeyCode.Minus or (char == "'") and Enum.KeyCode.Quote or Enum.KeyCode[char:upper()]
-        
-        if keyCode then
-            local currentDelay = speedWordDelay
-            
-            if instanttype then
-                currentDelay = 0
-            elseif jitterEnabled then
-                currentDelay = math.max(0.005, speedWordDelay + (math.random() * 2 - 1) * jitterIntensity)
-            end
-            
-            if i == 1 and textBox and textBox.Text ~= "" then textBox.Text = "" end
-            
-            Vim:SendKeyEvent(true, keyCode, false, game)
-            if currentDelay > 0 then task.wait(currentDelay / 2) end
-            Vim:SendKeyEvent(false, keyCode, false, game)
-            if currentDelay > 0 then task.wait(currentDelay / 2) end
-        end
-    end
-    
-    local finalPrompt, finalTurn = getGameStatus()
-    if finalPrompt == targetPrompt and finalTurn then
-        if not instanttype then task.wait(0.02) end
-        Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-        if not instanttype then task.wait(0.01) end
-        Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-        if not instanttype then task.wait(0.03) end
-        totalTurns = totalTurns + 1
-        turnsLabel:Set("Total Turns: " .. totalTurns)
-    else
-        if textBox then textBox.Text = "" end
-    end
-    
-    isTyping = false 
-end
-
--- === ОПТИМИЗИРОВАННАЯ ЛОГИКА ПОИСКА СЛОВА ===
-function copyword(bruteforce)
-    if isTyping then return end
-    local contains, isMyTurn = getGameStatus()
-    
-    if not contains or contains == "" then 
-        if lastChunk ~= "WAITING" then
-            sessionUsedWords = {} 
-            lastChunk = "WAITING" 
-            wasMyTurn = false
-            
-            if promptLabel then promptLabel:Set("Current Prompt: WAITING...") end
-            if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
-            if matchLabel then matchLabel:Set("Current Match: Waiting for game...") end
-        end
-        return 
-    end
-
-    local turnSwitchedToMe = (isMyTurn and not wasMyTurn)
-    wasMyTurn = isMyTurn
-
-    local currentTime = os.clock()
-    if currentTime - lastTypeTime > 4 then 
-        if lastChunk ~= "WAITING" then lastChunk = "" end 
-    end
-
-    if lastChunk ~= contains or bruteforce or turnSwitchedToMe then
-        lastChunk = contains
-        lastTypeTime = currentTime
-        promptLabel:Set("Current Prompt: " .. contains:upper())
-
-        local promptLower = contains:lower()
-        local bestSpecialWord = nil
-        local shortestNormalWord = nil
-        local shortestNormalLen = math.huge
-        local totalMatches = 0
-
-        for i = 1, #globalWordsList do
-            local candidate = globalWordsList[i]
-            
-            if not sessionUsedWords[candidate] and #candidate <= lettercap then
-                if string.find(candidate, promptLower, 1, true) then
-                    totalMatches = totalMatches + 1
-                    
-                    if not bestSpecialWord and (string.find(candidate, "-", 1, true) or string.find(candidate, "'", 1, true)) then
-                        bestSpecialWord = candidate
-                    elseif #candidate < shortestNormalLen then
-                        shortestNormalLen = #candidate
-                        shortestNormalWord = candidate
-                    end
-                end
-            end
-        end
-
-        solutionsLabel:Set("Solutions Found: " .. totalMatches)
-
-        local finalword = bestSpecialWord or shortestNormalWord
-
-        if finalword then
-            sessionUsedWords[finalword] = true 
-            matchLabel:Set("Current Match: " .. finalword:upper())
-            
-            if autotype and isMyTurn then
-                task.spawn(function()
-                    typeWordMobile(finalword, promptLower)
-                end)
-                lastChunk = "" 
-            end
-        else
-            matchLabel:Set("Current Match: Not Found")
-        end
-    end
-end
-
--- Auto Join Loop
+-- === ФОНОВЫЙ ПОТОК AUTO JOIN + СБРОС ПАМЯТИ ===
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
@@ -510,32 +549,34 @@ if Games then
                     
                     pcall(function() 
                         Games.GameEvent:FireServer(gameRoomID, "JoinGame") 
+                        sessionUsedWords = {}
+                        cachedUpdateFunc = nil 
+                        if matchLabel then matchLabel:Set("Current Match: Cleared (New Game)") end
+                        print("🚪 [Auto-Join]: Зашли в комнату:", gameRoomID, "| Память слов очищена")
                     end)
-
-                    task.wait(1) 
-                    sessionUsedWords = {} 
-                    lastChunk = "WAITING"
-                    wasMyTurn = false
                 end)
             end
         end)
     end
 end
 
--- Anti-Dupe Loop
+-- === ANTI-DUPE ===
 task.spawn(function()
-    while task.wait(1) do
-        if not autosearch then continue end
-        
-        local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    while task.wait(0.3) do
+        local localPlayer = Players.LocalPlayer
+        local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
         local gameGui = playerGui and (playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI"))
         
         if gameGui then
             for _, v in pairs(gameGui:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Visible and #v.Text >= 2 then
+                if v:IsA("TextLabel") and v.Visible and #v.Text >= 2 and v.Parent and v.Parent.Name ~= "Rayfield" then
                     local text = v.Text:gsub("%s+", "")
                     if text == text:upper() and not text:find("%d") and not text:find("TURN") and not text:find("ХОД") then
-                        sessionUsedWords[text:lower()] = true
+                        local lowerWord = text:lower()
+                        if not sessionUsedWords[lowerWord] then
+                            sessionUsedWords[lowerWord] = true
+                            print("🔥 [Anti-Dupe]: " .. lowerWord)
+                        end
                     end
                 end
             end
@@ -543,13 +584,15 @@ task.spawn(function()
     end
 end)
 
--- Timer Loop
+-- === TIMER LOOP ===
 task.spawn(function()
     while task.wait(1) do
         local elapsed = os.time() - startTime
         local hours = math.floor(elapsed / 3600)
         local minutes = math.floor((elapsed % 3600) / 60)
         local seconds = elapsed % 60
-        elapsedLabel:Set(string.format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds))
+        if elapsedLabel then
+            elapsedLabel:Set(string.format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds))
+        end
     end
 end)
