@@ -1,6 +1,33 @@
+-- === ЛОКАЛИЗАЦИЯ ЧАСТО ИСПОЛЬЗУЕМЫХ ФУНКЦИЙ И БИБЛИОТЕК ===
+local string_find = string.find
+local string_lower = string.lower
+local string_sub = string.sub
+local string_gsub = string.gsub
+local string_upper = string.upper
+local math_random = math.random
+local math_floor = math.floor
+local math_huge = math.huge
+local table_clear = table.clear
+local task_spawn = task.spawn
+local task_wait = task.wait
+local os_time = os.time
+local os_clock = os.clock
+local pcall = pcall
+local type = type
+local typeof = typeof
+local tostring = tostring
+local tonumber = tonumber
+local ipairs = ipairs
+local pairs = pairs
+local getgc = getgc
+local debug_getinfo = debug.getinfo
+local debug_getupvalues = debug.getupvalues
+
 local RbxAnalytics = game:GetService("RbxAnalyticsService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
+local Vim = game:GetService("VirtualInputManager")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local userHWID = RbxAnalytics:GetClientId()
 local KEYS_URL = "https://raw.githubusercontent.com/bro-pixel11/keys.json/main/auth.json"
@@ -8,7 +35,7 @@ local KEYS_URL = "https://raw.githubusercontent.com/bro-pixel11/keys.json/main/a
 local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
 
 if not userProvidedKey or userProvidedKey == "" then
-    Players.LocalPlayer:Kick("Ошибка: Ключ не найден! Укажите getgenv().PixelKey = 'ВАШ_КЛЮЧ' перед loadstring.")
+    Players.LocalPlayer:Kick("❌ Ошибка: Ключ не найден! Укажите getgenv().PixelKey = 'ВАШ_КЛЮЧ' перед loadstring.")
     return
 end
 
@@ -58,12 +85,12 @@ end
 local isAuthenticated, authMessage = authenticate()
 
 if not isAuthenticated then
-    Players.LocalPlayer:Kick("[Bro-Pixel Auth]: " .. authMessage)
+    Players.LocalPlayer:Kick("🔒 [Bro-Pixel Auth]: " .. authMessage)
     error("[AUTH FAILED]: " .. authMessage)
     return
 end
 
-print("Авторизация прошла успешно! Загрузка Bro-PixelScript...")
+print("✅ Авторизация прошла успешно! Загрузка Bro-PixelScript...")
 
 -- === ОСНОВНОЙ СКРИПТ ===
 
@@ -77,26 +104,26 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 -- Создание окна
 local Window = Rayfield:CreateWindow({
-   Name = "Bro-PixelScript (wordbomb)",
-   LoadingTitle = "Bro-Pixel Loader",
-   LoadingSubtitle = "by Bro-Pixel",
-   Theme = "CustomTheme", 
+    Name = "Bro-PixelScript (wordbomb)",
+    LoadingTitle = "Bro-Pixel Loader",
+    LoadingSubtitle = "by Bro-Pixel",
+    Theme = "CustomTheme", 
 
-   DisableRayfieldPrompts = false,
-   DisableBuildWarnings = false,
+    DisableRayfieldPrompts = false,
+    DisableBuildWarnings = false,
 
-   ConfigurationSaving = { Enabled = false },
-   KeySystem = false,
-   Size = UDim2.fromOffset(340, 280),
+    ConfigurationSaving = { Enabled = false },
+    KeySystem = false,
+    Size = UDim2.fromOffset(340, 280),
    
-   CustomTheme = {
+    CustomTheme = {
         TextColor = Color3.fromRGB(255, 255, 255),
         Background = Color3.fromRGB(25, 10, 40),        
         MainColor = Color3.fromRGB(90, 30, 180),       
         AccentColor = Color3.fromRGB(0, 240, 200),       
         OutlineColor = Color3.fromRGB(140, 50, 255),    
         PlaceholderColor = Color3.fromRGB(180, 150, 220)
-   }
+    }
 })
 
 -- Создание вкладок
@@ -151,6 +178,7 @@ local lastChunk = "WAITING"
 local lastTypeTime = 0
 local wasMyTurn = false
 local isTyping = false 
+local typingSessionId = 0
 
 local checkWordDelay = 1.0 
 local startTime = os.time()
@@ -158,9 +186,6 @@ local totalTurns = 0
 
 local typingWPM = 500
 local speedWordDelay = 60 / (typingWPM * 5)
-
-local Vim = game:GetService("VirtualInputManager")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local function applyRngVariation(baseValue)
     if rngVariationPercent <= 0 then return baseValue end
@@ -175,34 +200,98 @@ if Games then Games = Games:WaitForChild("Games", 10) end
 
 -- === HELPERS & CORE LOGIC ===
 
--- КЭШИРОВАННЫЙ ПОИСК СЛОГА ИЗ ПАМЯТИ (ОПТИМИЗАЦИЯ №1)
 local cachedUpdateFunc = nil
 
-local function getChunk()
-    if cachedUpdateFunc then
-        local ok, prompt = pcall(function()
-            for _, up in pairs(debug.getupvalues(cachedUpdateFunc)) do
-                if type(up) == "table" and up.Prompt and up.Prompt ~= "" then 
-                    return tostring(up.Prompt):lower() 
-                end
-            end
-        end)
-        if ok and prompt and prompt ~= "" then return prompt end
-    end
+-- Проверка жизнеспособности таблицы upvalues и принадлежащих ей объектов в Дереве игры (game)
+local function isUpvalueAlive(upvalueTable)
+    if type(upvalueTable) ~= "table" then return false end
+    
+    local hasInstance = false
+    local isAlive = false
 
-    for _, v in pairs(getgc(true)) do
-        if type(v) == "function" then
-            local info = debug.getinfo(v)
-            if info and info.name == "updateInfoFrame" then
-                cachedUpdateFunc = v
-                for _, up in pairs(debug.getupvalues(v)) do
-                    if type(up) == "table" and up.Prompt and up.Prompt ~= "" then 
-                        return tostring(up.Prompt):lower() 
+    for _, val in pairs(upvalueTable) do
+        if typeof(val) == "Instance" then
+            hasInstance = true
+            if val:IsDescendantOf(game) then
+                isAlive = true
+                break
+            end
+        elseif type(val) == "table" then
+            for _, subVal in pairs(val) do
+                if typeof(subVal) == "Instance" then
+                    hasInstance = true
+                    if subVal:IsDescendantOf(game) then
+                        isAlive = true
+                        break
                     end
                 end
             end
         end
     end
+
+    if hasInstance then
+        return isAlive
+    end
+    
+    return true
+end
+
+local function getChunk()
+    -- 1. Проверка сохраненного кэша с подтверждением валидности UI
+    if cachedUpdateFunc then
+        local isValid = false
+        local currentPrompt = nil
+
+        local ok = pcall(function()
+            local upvalues = debug.getupvalues(cachedUpdateFunc)
+            if upvalues then
+                for _, up in pairs(upvalues) do
+                    if type(up) == "table" and up.Prompt ~= nil then 
+                        if isUpvalueAlive(up) then
+                            local strPrompt = tostring(up.Prompt):lower():gsub("%s+", "")
+                            if strPrompt ~= "" and strPrompt ~= "nil" then
+                                currentPrompt = strPrompt
+                                isValid = true
+                            end
+                        end
+                        break
+                    end
+                end
+            end
+        end)
+
+        if ok and isValid and currentPrompt then 
+            return currentPrompt 
+        else
+            cachedUpdateFunc = nil
+        end
+    end
+
+    -- 2. Сканирование getgc() с конца массива (поиск самых свежих функций)
+    local gcObjects = getgc(true)
+    for i = #gcObjects, 1, -1 do
+        local v = gcObjects[i]
+        if type(v) == "function" then
+            local info = debug.getinfo(v)
+            if info and info.name == "updateInfoFrame" then
+                local upvalues = debug.getupvalues(v)
+                if upvalues then
+                    for _, up in pairs(upvalues) do
+                        if type(up) == "table" and up.Prompt ~= nil then 
+                            if isUpvalueAlive(up) then
+                                local strPrompt = tostring(up.Prompt):lower():gsub("%s+", "")
+                                if strPrompt ~= "" and strPrompt ~= "nil" then
+                                    cachedUpdateFunc = v
+                                    return strPrompt
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     return nil
 end
 
@@ -240,16 +329,24 @@ local function getGameTextBox()
     return nil
 end
 
--- === TYPING LOGIC ===
+-- === TYPING LOGIC (ЗАЩИТА ОТ ГОНОК И ПАРАЛЛЕЛЬНЫХ ПОТОКОВ) ===
 local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
     
+    typingSessionId = typingSessionId + 1
+    local currentSession = typingSessionId
+
     if not instanttype and checkWordDelay > 0 then 
         local finalDelay = applyRngVariation(checkWordDelay)
         task.wait(finalDelay) 
     end
     
+    if currentSession ~= typingSessionId then
+        isTyping = false
+        return
+    end
+
     local currentPrompt, isMyTurn = getGameStatus()
     if currentPrompt ~= targetPrompt or not isMyTurn then
         isTyping = false
@@ -265,6 +362,8 @@ local function typeWordMobile(word, targetPrompt)
     end
     
     for i = 1, #word do
+        if currentSession ~= typingSessionId then break end
+        
         local checkPrompt, checkTurn = getGameStatus()
         if checkPrompt ~= targetPrompt or not checkTurn then break end
         
@@ -274,7 +373,7 @@ local function typeWordMobile(word, targetPrompt)
         if char == "-" then
             keyCode = Enum.KeyCode.Minus
         elseif char == "'" then
-            keyCode = Enum.Quote
+            keyCode = Enum.KeyCode.Quote
         else
             keyCode = Enum.KeyCode[char:upper()]
         end
@@ -305,20 +404,24 @@ local function typeWordMobile(word, targetPrompt)
         end
     end
     
-    local finalPrompt, finalTurn = getGameStatus()
-    if finalPrompt == targetPrompt and finalTurn then
-        if not instanttype then task.wait(0.02) end
-        Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-        if not instanttype then task.wait(0.01) end
-        Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-        if not instanttype then task.wait(0.03) end
-        totalTurns = totalTurns + 1
-        if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
-    else
-        if textBox then textBox.Text = "" end
+    if currentSession == typingSessionId then
+        local finalPrompt, finalTurn = getGameStatus()
+        if finalPrompt == targetPrompt and finalTurn then
+            if not instanttype then task.wait(0.02) end
+            Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+            if not instanttype then task.wait(0.01) end
+            Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            if not instanttype then task.wait(0.03) end
+            totalTurns = totalTurns + 1
+            if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
+        else
+            if textBox then textBox.Text = "" end
+        end
     end
     
-    isTyping = false 
+    if currentSession == typingSessionId then
+        isTyping = false 
+    end
 end
 
 -- === ЛОГИКА ПОИСКА СЛОВ И СБРОСА ===
@@ -331,6 +434,7 @@ local function copyword(bruteforce)
             sessionUsedWords = {} 
             lastChunk = "WAITING" 
             wasMyTurn = false
+            cachedUpdateFunc = nil
             
             if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
             if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
@@ -344,6 +448,7 @@ local function copyword(bruteforce)
 
     if currentTime - lastTypeTime > 5 and lastChunk == contains then
         sessionUsedWords = {}
+        cachedUpdateFunc = nil
     end
 
     if lastChunk ~= contains or bruteforce then
@@ -355,7 +460,6 @@ local function copyword(bruteforce)
         local specialMatches = {}
         local normalMatches = {}
         
-        -- Быстрый фильтр (ОПТИМИЗАЦИЯ №2: Проверка длины и использования ДО string.find)
         for i = 1, #globalWordsList do
             local candidate = globalWordsList[i]
             if #candidate <= lettercap and not sessionUsedWords[candidate] then
@@ -389,7 +493,7 @@ local function copyword(bruteforce)
             sessionUsedWords[finalword] = true
             if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
             
-            if autotype and isMyTurn then
+            if autotype and isMyTurn and not isTyping then
                 task.spawn(function()
                     typeWordMobile(finalword, promptLower)
                 end)
@@ -444,10 +548,12 @@ MainTab:CreateToggle({
         if autojoin and Games then
             task.spawn(function()
                 if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
+                typingSessionId = typingSessionId + 1
                 sessionUsedWords = {} 
                 lastChunk = "WAITING"
                 wasMyTurn = false
                 isTyping = false
+                cachedUpdateFunc = nil
                 pcall(function()
                     for i = -1, -20, -1 do 
                         Games.GameEvent:FireServer(i, "JoinGame") 
@@ -544,15 +650,18 @@ if Games then
                 task.spawn(function()
                     if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
                     
+                    typingSessionId = typingSessionId + 1 
+                    sessionUsedWords = {} 
+                    lastChunk = "WAITING"
+                    wasMyTurn = false
+                    isTyping = false
+                    cachedUpdateFunc = nil 
+                    
                     pcall(function() 
                         Games.GameEvent:FireServer(gameRoomID, "JoinGame") 
                     end)
 
                     task.wait(1)
-                    sessionUsedWords = {} 
-                    lastChunk = "WAITING"
-                    wasMyTurn = false
-                    isTyping = false
                     
                     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
                     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
@@ -562,7 +671,7 @@ if Games then
     end
 end
 
--- === ANTI-DUPE (ОПТИМИЗАЦИЯ №3: Точечное сканирование конкретных GUI без глубокого перебора всего дерева) ===
+-- === ANTI-DUPE ===
 task.spawn(function()
     while task.wait(0.8) do
         if not autosearch then continue end
@@ -574,7 +683,6 @@ task.spawn(function()
         local targetGui = playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI")
         
         if targetGui then
-            -- Сканируем только детей контейнера игры
             for _, child in ipairs(targetGui:GetChildren()) do
                 if child:IsA("Frame") or child:IsA("ScrollingFrame") then
                     for _, v in ipairs(child:GetChildren()) do
