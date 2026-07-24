@@ -168,8 +168,7 @@ local jitterEnabled = false
 local jitterIntensity = 0.05 
 local rngVariationPercent = 0 
 
-local lastChunk = "WAITING"
-local lastTypeTime = 0
+local lastHandledPrompt = ""
 local wasMyTurn = false
 local isTyping = false 
 local typingSessionId = 0
@@ -198,7 +197,7 @@ if Games then Games = Games:WaitForChild("Games", 10) end
 local function resetRoundState()
     typingSessionId = typingSessionId + 1 
     sessionUsedWords = {} 
-    lastChunk = "WAITING"
+    lastHandledPrompt = ""
     wasMyTurn = false
     isTyping = false
     cachedUpdateFunc = nil 
@@ -456,29 +455,24 @@ local function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    -- 1. Если промпта нет вообще (катка завершилась / мы в лобби)
+    -- 1. Если промпта нет (в лобби / между играми)
     if not contains or contains == "" then 
-        if lastChunk ~= "WAITING" then
-            resetRoundState()
-        end
+        lastHandledPrompt = ""
         return 
     end
 
-    -- 2. Если промпт есть, но сейчас ХОД СОПЕРНИКА
+    -- 2. Если сейчас НЕ наш ход — сбрасываем обработанный промпт
     if not isMyTurn then
-        -- Просто сбрасываем текущий промпт, чтобы на нашем следующем ходу 
-        -- скрипт прочитал новый слог. Таблицу sessionUsedWords НЕ трогаем!
-        lastChunk = "WAITING"
+        lastHandledPrompt = ""
         return
     end
 
-    -- 3. Наш ход! Работаем с поиском и вводом
+    -- 3. Наш ход! Ищем слово только если промпт новый или вызван bruteforce
     wasMyTurn = true
-    local currentTime = os_clock()
 
-    if lastChunk ~= contains or bruteforce then
-        lastChunk = contains
-        lastTypeTime = currentTime
+    if contains ~= lastHandledPrompt or bruteforce then
+        lastHandledPrompt = contains
+        
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
 
         local promptLower = contains:lower()
@@ -522,7 +516,6 @@ local function copyword(bruteforce)
                 task_spawn(function()
                     typeWordMobile(finalword, promptLower)
                 end)
-                lastChunk = "WAITING" 
             end
         else
             if matchLabel then matchLabel:Set("Current Match: Not Found") end
