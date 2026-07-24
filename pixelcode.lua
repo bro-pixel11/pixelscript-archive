@@ -671,19 +671,23 @@ task.defer(function()
     end
 end)
 
--- === DEBUG PRINT ALL VISIBLE UI ELEMENTS ===
-task.defer(function()
-    while task.wait(0.2) do
-        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-        if playerGui then
-            for _,v in ipairs(playerGui:GetDescendants()) do
-                if (v:IsA("TextLabel") or v:IsA("TextButton") or v:IsA("TextBox"))
-                    and v.Visible
-                    and v.Text ~= "" then
+-- === DEBUG PRINT CHANGED VISIBLE UI TEXTS ===
+local printed = {}
 
-                    print(v.ClassName, v:GetFullName())
-                    print("TEXT:", v.Text)
-                    print("----------------")
+task.spawn(function()
+    while task.wait(0.1) do
+        local gui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if gui then
+            for _,v in ipairs(gui:GetDescendants()) do
+                if (v:IsA("TextLabel") or v:IsA("TextButton") or v:IsA("TextBox")) and v.Visible then
+                    local t = tostring(v.Text)
+
+                    if t ~= "" and printed[v] ~= t then
+                        printed[v] = t
+                        print("PATH:", v:GetFullName())
+                        print("TEXT:", t)
+                        print("----------------")
+                    end
                 end
             end
         end
