@@ -204,7 +204,7 @@ local function resetRoundState()
     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
 end
 
--- === ЛОГИКА ПОЛУЧЕНИЯ ХОДА И ПРОМПТА ИЗ ПРЕДОСТАВЛЕННОГО СКРИПТА ===
+-- === ЛОГИКА ПОЛУЧЕНИЯ ХОДА И ПРОМПТА ===
 
 local function GetTurn()
     local s, r = pcall(function()
@@ -254,7 +254,6 @@ local function getGameStatus()
     local currentTurnId = GetTurn()
     local isMyTurn = (currentTurnId == localPlayer.UserId)
 
-    -- Резервная проверка надписей хода в GUI, если GetTurn() не вернул ID
     if currentTurnId == nil then
         local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
         if playerGui then
@@ -369,6 +368,9 @@ local function typeWordMobile(word, targetPrompt)
             if not instanttype then task.wait(0.03) end
             totalTurns = totalTurns + 1
             if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
+            
+            -- СБРОС: Слово отправлено, готовность к повторному промпту в следующем ходу
+            lastHandledPrompt = ""
         else
             if textBox then textBox.Text = "" end
         end
@@ -384,19 +386,19 @@ local function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    -- 1. Если промпта нет (в лобби / между играми)
+    -- 1. Если промпта нет
     if not contains or contains == "" then 
         lastHandledPrompt = ""
         return 
     end
 
-    -- 2. Если сейчас НЕ наш ход — сбрасываем обработанный промпт
+    -- 2. Если сейчас НЕ наш ход
     if not isMyTurn then
         lastHandledPrompt = ""
         return
     end
 
-    -- 3. Наш ход! Ищем слово только если промпт новый или вызван bruteforce
+    -- 3. Наш ход
     wasMyTurn = true
 
     if contains ~= lastHandledPrompt or bruteforce then
@@ -448,6 +450,7 @@ local function copyword(bruteforce)
             end
         else
             if matchLabel then matchLabel:Set("Current Match: Not Found") end
+            lastHandledPrompt = ""
         end
     end
 end
