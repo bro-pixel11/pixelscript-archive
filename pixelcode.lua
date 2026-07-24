@@ -8,7 +8,7 @@ local KEYS_URL = "https://raw.githubusercontent.com/bro-pixel11/keys.json/main/a
 local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
 
 if not userProvidedKey or userProvidedKey == "" then
-    Players.LocalPlayer:Kick("❌ Ошибка: Ключ не найден! Укажите getgenv().PixelKey = 'ВАШ_КЛЮЧ' перед loadstring.")
+    Players.LocalPlayer:Kick("Ошибка: Ключ не найден! Укажите getgenv().PixelKey = 'ВАШ_КЛЮЧ' перед loadstring.")
     return
 end
 
@@ -35,7 +35,6 @@ local function authenticate()
         return false, "Неверный ключ доступа!"
     end
 
-    -- Если в auth.json указан массив (список) из нескольких HWID
     if type(registeredHWID) == "table" then
         for _, allowedHWID in ipairs(registeredHWID) do
             if allowedHWID == userHWID then
@@ -45,7 +44,6 @@ local function authenticate()
         return false, "Ваш HWID не найден в списке разрешённых!\nВаш HWID: " .. tostring(userHWID)
     end
 
-    -- Если в auth.json указана одиночная строка HWID
     if registeredHWID == userHWID then
         return true, "Успешно!"
     end
@@ -60,12 +58,12 @@ end
 local isAuthenticated, authMessage = authenticate()
 
 if not isAuthenticated then
-    Players.LocalPlayer:Kick("🔒 [Bro-Pixel Auth]: " .. authMessage)
+    Players.LocalPlayer:Kick("[Bro-Pixel Auth]: " .. authMessage)
     error("[AUTH FAILED]: " .. authMessage)
     return
 end
 
-print("✅ Авторизация прошла успешно! Загрузка Bro-PixelScript...")
+print("Авторизация прошла успешно! Загрузка Bro-PixelScript...")
 
 -- === ОСНОВНОЙ СКРИПТ ===
 
@@ -79,8 +77,8 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 -- Создание окна
 local Window = Rayfield:CreateWindow({
-   Name = "🎨 Bro-PixelScript (wordbomb) 🎨",
-   LoadingTitle = "⚡ Bro-Pixel Loader ⚡",
+   Name = "Bro-PixelScript (wordbomb)",
+   LoadingTitle = "Bro-Pixel Loader",
    LoadingSubtitle = "by Bro-Pixel",
    Theme = "CustomTheme", 
 
@@ -88,7 +86,7 @@ local Window = Rayfield:CreateWindow({
    DisableBuildWarnings = false,
 
    ConfigurationSaving = { Enabled = false },
-   KeySystem = false, -- Отключено, так как проверка прошла перед запуском
+   KeySystem = false,
    Size = UDim2.fromOffset(340, 280),
    
    CustomTheme = {
@@ -102,10 +100,10 @@ local Window = Rayfield:CreateWindow({
 })
 
 -- Создание вкладок
-local MainTab = Window:CreateTab("🪐 Main", nil)
-local SettingsTab = Window:CreateTab("⚙️ Settings", nil)
+local MainTab = Window:CreateTab("Main", nil)
+local SettingsTab = Window:CreateTab("Settings", nil)
 
-local statusLabel = MainTab:CreateLabel("⏳ Loading and indexing 282k dictionary...")
+local statusLabel = MainTab:CreateLabel("Loading and indexing dictionary...")
 
 -- Основная база слов
 local globalWordsList = {} 
@@ -115,7 +113,7 @@ local function loadDictionaryAsync(url)
     task.spawn(function()
         local success, raw = pcall(function() return game:HttpGet(url) end)
         if not success or not raw then 
-            statusLabel:Set("❌ Failed to load dictionary!")
+            statusLabel:Set("Failed to load dictionary!")
             return 
         end
         
@@ -131,7 +129,7 @@ local function loadDictionaryAsync(url)
                 end
             end
         end
-        statusLabel:Set("📚 Dictionary: " .. total .. " words (Ready)")
+        statusLabel:Set("Dictionary: " .. total .. " words (Ready)")
     end)
 end
 
@@ -147,7 +145,7 @@ local autojoin = false
 local autoJoinDelay = 2 
 local jitterEnabled = false 
 local jitterIntensity = 0.05 
-local rngVariationPercent = 0 -- Вариация от 0% до 100%
+local rngVariationPercent = 0 
 
 local lastChunk = ""
 local lastTypeTime = 0
@@ -164,7 +162,6 @@ local speedWordDelay = 60 / (typingWPM * 5)
 local Vim = game:GetService("VirtualInputManager")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Вспомогательная функция для генерации вариации в диапазоне [-rngVariationPercent, +rngVariationPercent]
 local function applyRngVariation(baseValue)
     if rngVariationPercent <= 0 then return baseValue end
     local factor = 1 + ((math.random() * 2 - 1) * (rngVariationPercent / 100))
@@ -210,7 +207,7 @@ end
 
 local function getGameStatus()
     local prompt = getChunk()
-    if not prompt then return nil, false end
+    if not prompt or prompt == "" then return nil, false end
     
     local localPlayer = Players.LocalPlayer
     if not localPlayer then return nil, false end
@@ -247,7 +244,6 @@ local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
     
-    -- Применяем RNG к задержке перед вводом
     if not instanttype and checkWordDelay > 0 then 
         local finalDelay = applyRngVariation(checkWordDelay)
         task.wait(finalDelay) 
@@ -288,7 +284,6 @@ local function typeWordMobile(word, targetPrompt)
             if instanttype then
                 currentDelay = 0
             else
-                -- Применяем RNG вариацию к скорости нажатия каждого символа
                 currentDelay = applyRngVariation(speedWordDelay)
                 
                 if jitterEnabled then
@@ -330,22 +325,34 @@ local function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    if not contains then 
-        lastChunk = "" 
-        wasMyTurn = false
-        if promptLabel then promptLabel:Set("Current Prompt: None") end
-        if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
-        if matchLabel then matchLabel:Set("Current Match: None") end
+    -- Если раунд закончился или промпт отсутствует, сбрасываем память и ждем следующей игры
+    if not contains or contains == "" then 
+        if lastChunk ~= "WAITING" then
+            sessionUsedWords = {} 
+            lastChunk = "WAITING" 
+            wasMyTurn = false
+            cachedUpdateFunc = nil
+            
+            if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
+            if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
+            if matchLabel then matchLabel:Set("Current Match: Waiting for game...") end
+        end
         return 
     end
 
-    local turnSwitchedToMe = (isMyTurn and not wasMyTurn)
+    if isMyTurn and not wasMyTurn and contains == lastChunk and lastChunk ~= "" and lastChunk ~= "WAITING" then
+        task.wait(0.1)
+        contains, isMyTurn = getGameStatus()
+    end
+
     wasMyTurn = isMyTurn
 
     local currentTime = os.clock()
-    if currentTime - lastTypeTime > 4 then lastChunk = "" end
+    if currentTime - lastTypeTime > 4 then 
+        if lastChunk ~= "WAITING" then lastChunk = "" end 
+    end
 
-    if lastChunk ~= contains or bruteforce or turnSwitchedToMe then
+    if (contains ~= lastChunk and contains ~= "") or bruteforce then
         lastChunk = contains
         lastTypeTime = currentTime
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
@@ -429,13 +436,13 @@ MainTab:CreateToggle({
 })
 
 MainTab:CreateToggle({ 
-    Name = "⚡ Instant Type (No Delay) ⚡", 
+    Name = "Instant Type (No Delay)", 
     CurrentValue = false, 
     Callback = function(Value) instanttype = Value end 
 })
 
 MainTab:CreateToggle({
-    Name = "🚪 Auto Join Game 🚪",
+    Name = "Auto Join Game",
     CurrentValue = false,
     Callback = function(Value)
         autojoin = Value
@@ -443,6 +450,10 @@ MainTab:CreateToggle({
             task.spawn(function()
                 if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
                 sessionUsedWords = {} 
+                lastChunk = "WAITING"
+                wasMyTurn = false
+                cachedUpdateFunc = nil
+                isTyping = false
                 pcall(function()
                     for i = -1, -20, -1 do 
                         Games.GameEvent:FireServer(i, "JoinGame") 
@@ -454,16 +465,8 @@ MainTab:CreateToggle({
 })
 
 MainTab:CreateButton({ 
-    Name = "🔥 Search Word (Manual) 🔥", 
+    Name = "Search Word (Manual)", 
     Callback = function() copyword(true) end 
-})
-
-MainTab:CreateButton({ 
-    Name = "🗑️ Clear Memory", 
-    Callback = function() 
-        sessionUsedWords = {}
-        if matchLabel then matchLabel:Set("Current Match: Cleared") end 
-    end 
 })
 
 -- === UI ELEMENTS (SETTINGS TAB) ===
@@ -501,7 +504,7 @@ SettingsTab:CreateSlider({
 })
 
 SettingsTab:CreateSlider({
-   Name = "🎲 RNG Variation 🎲",
+   Name = "RNG Variation",
    Info = "Random speed & delay variation (+-0% to +-100%)",
    Range = {0, 100},
    Increment = 5,
@@ -530,7 +533,7 @@ SettingsTab:CreateSlider({
 })
 
 -- === STATS PANEL ===
-MainTab:CreateSection("📊 Statistics 📊")
+MainTab:CreateSection("Statistics")
 elapsedLabel = MainTab:CreateLabel("Elapsed Time: 00:00:00")
 turnsLabel = MainTab:CreateLabel("Total Turns: 0")
 promptLabel = MainTab:CreateLabel("Current Prompt: None")
@@ -538,7 +541,7 @@ solutionsLabel = MainTab:CreateLabel("Solutions Found: 0")
 matchLabel = MainTab:CreateLabel("Current Match: None")
 MainTab:CreateSection("------------------")
 
--- === ФОНОВЫЙ ПОТОК AUTO JOIN + СБРОС ПАМЯТИ ===
+-- === ФОНОВЫЙ ПОТОК AUTO JOIN + АВТО-СБРОС СОСТОЯНИЙ ===
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
@@ -549,11 +552,18 @@ if Games then
                     
                     pcall(function() 
                         Games.GameEvent:FireServer(gameRoomID, "JoinGame") 
-                        sessionUsedWords = {}
-                        cachedUpdateFunc = nil 
-                        if matchLabel then matchLabel:Set("Current Match: Cleared (New Game)") end
-                        print("🚪 [Auto-Join]: Зашли в комнату:", gameRoomID, "| Память слов очищена")
                     end)
+
+                    task.wait(1)
+                    sessionUsedWords = {}
+                    lastChunk = "WAITING"
+                    wasMyTurn = false
+                    cachedUpdateFunc = nil
+                    isTyping = false
+                    
+                    if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
+                    if matchLabel then matchLabel:Set("Current Match: Waiting...") end
+                    print("[Auto-Join]: Зашли в комнату: " .. tostring(gameRoomID) .. " | Память и промпт сброшены")
                 end)
             end
         end)
@@ -575,7 +585,7 @@ task.spawn(function()
                         local lowerWord = text:lower()
                         if not sessionUsedWords[lowerWord] then
                             sessionUsedWords[lowerWord] = true
-                            print("🔥 [Anti-Dupe]: " .. lowerWord)
+                            print("[Anti-Dupe]: " .. lowerWord)
                         end
                     end
                 end
