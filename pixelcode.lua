@@ -237,7 +237,7 @@ local function updateGuiCache()
         end
     end
 
-    -- Ивентовый поиск при изменении текста
+    -- Подключение события при изменении текста промпта (Основной триггер)
     if cachedPromptLabel and not promptConnection then
         promptConnection = cachedPromptLabel:GetPropertyChangedSignal("Text"):Connect(function()
             if autosearch then
@@ -592,6 +592,16 @@ if Games then
         end)
     end
 end
+
+-- === РЕЗЕРВНЫЙ ЦИКЛ ОБНОВЛЕНИЯ UI И ПОИСКА ===
+task.defer(function()
+    while task_wait(0.9) do
+        updateGuiCache()
+        if autosearch then
+            task.defer(pcall, copyword)
+        end
+    end
+end)
 
 -- === ANTI-DUPE ===
 task.defer(function()
