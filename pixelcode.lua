@@ -180,8 +180,6 @@ local totalTurns = 0
 local typingWPM = 500
 local speedWordDelay = 60 / (typingWPM * 5)
 
-local cachedUpdateFunc = nil
-
 local function applyRngVariation(baseValue)
     if rngVariationPercent <= 0 then return baseValue end
     local factor = 1 + ((math.random() * 2 - 1) * (rngVariationPercent / 100))
@@ -200,147 +198,78 @@ local function resetRoundState()
     lastHandledPrompt = ""
     wasMyTurn = false
     isTyping = false
-    cachedUpdateFunc = nil 
     
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
 end
 
--- === HELPERS & CORE LOGIC ===
+-- === ЛОГИКА ПОЛУЧЕНИЯ ХОДА И ПРОМПТА ИЗ ПРЕДОСТАВЛЕННОГО СКРИПТА ===
 
-local function isGameGuiActive()
-    local localPlayer = Players.LocalPlayer
-    if not localPlayer then return nil end
-    
-    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return nil end
-
-    for _, name in ipairs({"GameUI", "DesktopUI", "MobileUI", "Game"}) do
-        local gui = playerGui:FindFirstChild(name)
-        if gui and gui.Enabled ~= false then
-            return gui
-        end
-    end
-
-    for _, child in ipairs(playerGui:GetChildren()) do
-        if child:IsA("ScreenGui") and child.Enabled and child.Name ~= "Rayfield" and child.Name ~= "Chat" then
-            return child
-        end
-    end
-
-    return nil
-end
-
-local function isUpvalueBelongsToActiveGui(upvalueTable, activeGui)
-    if type(upvalueTable) ~= "table" or not activeGui then return false end
-
-    local foundValidInstance = false
-
-    for _, val in pairs(upvalueTable) do
-        if typeof(val) == "Instance" then
-            if val:IsDescendantOf(activeGui) then
-                return true
-            end
-            foundValidInstance = true
-        elseif type(val) == "table" then
-            for _, subVal in pairs(val) do
-                if typeof(subVal) == "Instance" then
-                    if subVal:IsDescendantOf(activeGui) then
-                        return true
-                    end
-                    foundValidInstance = true
+local function GetTurn()
+    local s, r = pcall(function()
+        for _, v in pairs(getgc()) do
+            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
+                for __, vv in ipairs(debug_getupvalues(v)) do
+                    if type(vv) == "table" and vv.PlayerID ~= nil then return vv.PlayerID end
                 end
             end
         end
-    end
-
-    return not foundValidInstance
+    end)
+    if s and r then return r end
+    return nil
 end
 
-local function getChunk()
-    local activeGui = isGameGuiActive()
-    if not activeGui then
-        cachedUpdateFunc = nil
-        return nil
+local function GetLetters()
+    local s, r = pcall(function()
+        for _, v in pairs(getgc()) do
+            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
+                for __, vv in pairs(debug_getupvalues(v)) do
+                    if type(vv) == "table" and vv.Prompt ~= nil then return vv.Prompt end
+                end
+            end
+        end
+    end)
+    if s and r then return r end
+
+    local localPlayer = Players.LocalPlayer
+    local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
+    if playerGui then
+        local promptLbl = playerGui:FindFirstChild("PromptLabel", true)
+        if promptLbl then return promptLbl.Text end
     end
+    return ""
+end
 
-    if cachedUpdateFunc then
-        local isValid = false
-        local currentPrompt = nil
+local function getGameStatus()
+    local rawPrompt = GetLetters()
+    if not rawPrompt or rawPrompt == "" then return nil, false end
 
-        local ok = pcall(function()
-            local upvalues = debug_getupvalues(cachedUpdateFunc)
-            if upvalues then
-                for _, up in pairs(upvalues) do
-                    if type(up) == "table" and up.Prompt ~= nil then 
-                        if isUpvalueBelongsToActiveGui(up, activeGui) then
-                            local strPrompt = tostring(up.Prompt):lower():gsub("%s+", "")
-                            if strPrompt ~= "" and strPrompt ~= "nil" and strPrompt ~= "waiting" then
-                                currentPrompt = strPrompt
-                                isValid = true
-                            end
-                        end
+    local prompt = tostring(rawPrompt):lower():gsub("%s+", "")
+    if prompt == "" or prompt == "nil" or prompt == "waiting" then return nil, false end
+
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then return nil, false end
+
+    local currentTurnId = GetTurn()
+    local isMyTurn = (currentTurnId == localPlayer.UserId)
+
+    -- Резервная проверка надписей хода в GUI, если GetTurn() не вернул ID
+    if currentTurnId == nil then
+        local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+        if playerGui then
+            for _, v in pairs(playerGui:GetDescendants()) do
+                if v:IsA("TextLabel") and v.Visible and v.Parent and v.Parent.Name ~= "Rayfield" then
+                    local text = v.Text:lower()
+                    if string_find(text, "quick") or string_find(text, "быстро") or string_find(text, "your turn") or string_find(text, "ходи") then
+                        isMyTurn = true
                         break
                     end
                 end
             end
-        end)
-
-        if ok and isValid and currentPrompt then 
-            return currentPrompt 
-        else
-            cachedUpdateFunc = nil
         end
     end
 
-    local gcObjects = getgc(true)
-    for i = #gcObjects, 1, -1 do
-        local v = gcObjects[i]
-        if type(v) == "function" then
-            local info = debug_getinfo(v)
-            if info and info.name == "updateInfoFrame" then
-                local upvalues = debug_getupvalues(v)
-                if upvalues then
-                    for _, up in pairs(upvalues) do
-                        if type(up) == "table" and up.Prompt ~= nil then 
-                            if isUpvalueBelongsToActiveGui(up, activeGui) then
-                                local strPrompt = tostring(up.Prompt):lower():gsub("%s+", "")
-                                if strPrompt ~= "" and strPrompt ~= "nil" and strPrompt ~= "waiting" then
-                                    cachedUpdateFunc = v
-                                    return strPrompt
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    return nil
-end
-
-local function getGameStatus()
-    local prompt = getChunk()
-    if not prompt or prompt == "" then return nil, false end
-    
-    local localPlayer = Players.LocalPlayer
-    if not localPlayer then return nil, false end
-    
-    local isMyTurn = false
-    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-    if playerGui then
-        for _, v in pairs(playerGui:GetDescendants()) do
-            if v:IsA("TextLabel") and v.Visible and v.Parent and v.Parent.Name ~= "Rayfield" then
-                local text = v.Text:lower()
-                if string_find(text, "quick") or string_find(text, "быстро") or string_find(text, "your turn") or string_find(text, "ходи") then
-                    isMyTurn = true
-                    break
-                end
-            end
-        end
-    end
     return prompt, isMyTurn
 end
 
