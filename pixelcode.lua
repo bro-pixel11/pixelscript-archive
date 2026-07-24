@@ -1,4 +1,3 @@
-проверь:
 -- === КЭШ СЕРВИСОВ И ИГРОКА ===
 local RbxAnalytics = game:GetService("RbxAnalyticsService")
 local HttpService = game:GetService("HttpService")
