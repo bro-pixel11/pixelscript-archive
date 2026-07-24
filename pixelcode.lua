@@ -279,32 +279,49 @@ local solutionsLabel = MainTab:CreateLabel("Solutions Found: 0")
 local matchLabel = MainTab:CreateLabel("Current Match: None")
 MainTab:CreateSection("------------------")
 
--- === КЭШИРОВАННЫЕ ХЕЛПЕРЫ ДЛЯ МАКСИМАЛЬНОГО FPS ===
-local cachedPromptObject = nil
+-- === ОПТИМИЗИРОВАННЫЙ КЭШ ДЛЯ GETGC (0% ПОТЕРЬ FPS) ===
+local cachedInfoTable = nil
+local cachedUpdateFunc = nil
 
-local function getChunk()
-    if cachedPromptObject and cachedPromptObject.Parent and cachedPromptObject.Visible then
-        local txt = cachedPromptObject.Text:gsub("%s+", ""):lower()
-        if #txt >= 2 and #txt <= 5 and not txt:find("turn") and not txt:find("быстро") and not txt:find("ходи") then
-            return txt
+local function getGCInfoTable()
+    if cachedInfoTable and type(cachedInfoTable) == "table" and cachedInfoTable.Prompt ~= nil then
+        return cachedInfoTable
+    end
+
+    if cachedUpdateFunc then
+        for _, upv in ipairs(debug.getupvalues(cachedUpdateFunc)) do
+            if type(upv) == "table" and upv.Prompt ~= nil then
+                cachedInfoTable = upv
+                return upv
+            end
         end
     end
 
-    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return nil end
-
-    for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "MainUI"}) do
-        local gameGui = playerGui:FindFirstChild(guiName)
-        if gameGui then
-            for _, v in pairs(gameGui:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Visible and v.Parent and (v.Parent.Name == "InfoFrame" or v.Name == "Prompt" or v.Name == "Frame") then
-                    local txt = v.Text:gsub("%s+", ""):lower()
-                    if #txt >= 2 and #txt <= 5 and not txt:find("turn") and not txt:find("быстро") and not txt:find("ходи") then
-                        cachedPromptObject = v
-                        return txt
+    -- Тяжелый getgc(true) выполняется ТОЛЬКО ЕДИНОЖДЫ до нахождения таблицы
+    for _, v in pairs(getgc(true)) do
+        if type(v) == "function" then
+            local info = debug.getinfo(v)
+            if info and info.name == "updateInfoFrame" then
+                cachedUpdateFunc = v
+                for _, upv in ipairs(debug.getupvalues(v)) do
+                    if type(upv) == "table" and upv.Prompt ~= nil then
+                        cachedInfoTable = upv
+                        return upv
                     end
                 end
             end
+        end
+    end
+
+    return nil
+end
+
+local function getChunk()
+    local infoTable = getGCInfoTable()
+    if infoTable and infoTable.Prompt and infoTable.Prompt ~= "" then
+        local prompt = tostring(infoTable.Prompt):gsub("%s+", ""):lower()
+        if #prompt >= 2 and #prompt <= 5 then
+            return prompt
         end
     end
     return nil
@@ -312,21 +329,28 @@ end
 
 local function getGameStatus()
     local prompt = getChunk()
-    if not prompt or prompt == "" then return nil, false end
+    if not prompt then return nil, false end
     
     local isMyTurn = false
-    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if playerGui then
-        for _, v in pairs(playerGui:GetDescendants()) do
-            if v:IsA("TextLabel") and v.Visible and v.Parent.Name ~= "Rayfield" then
-                local text = v.Text:lower()
-                if text:find("quick") or text:find("быстро") or text:find("your turn") or text:find("ходи") then
-                    isMyTurn = true
-                    break
+    local infoTable = getGCInfoTable()
+    
+    if infoTable and infoTable.PlayerID then
+        isMyTurn = (infoTable.PlayerID == LocalPlayer.UserId)
+    else
+        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if playerGui then
+            for _, v in pairs(playerGui:GetDescendants()) do
+                if v:IsA("TextLabel") and v.Visible and v.Parent.Name ~= "Rayfield" then
+                    local text = v.Text:lower()
+                    if text:find("quick") or text:find("быстро") or text:find("your turn") or text:find("ходи") then
+                        isMyTurn = true
+                        break
+                    end
                 end
             end
         end
     end
+
     return prompt, isMyTurn
 end
 
@@ -408,7 +432,7 @@ function copyword(bruteforce)
     
     if not contains or contains == "" then 
         if lastChunk ~= "WAITING" then
-            sessionUsedWords = {} -- Быстрый сброс использованных слов
+            sessionUsedWords = {} 
             lastChunk = "WAITING" 
             wasMyTurn = false
             
@@ -438,16 +462,13 @@ function copyword(bruteforce)
         local shortestNormalLen = math.huge
         local totalMatches = 0
 
-        -- Выполняем поиск за 1 проход по словарю
         for i = 1, #globalWordsList do
             local candidate = globalWordsList[i]
             
-            -- Проверка наличия слога и использования за O(1)
             if not sessionUsedWords[candidate] and #candidate <= lettercap then
                 if string.find(candidate, promptLower, 1, true) then
                     totalMatches = totalMatches + 1
                     
-                    -- Приоритет спецсимволам
                     if not bestSpecialWord and (string.find(candidate, "-", 1, true) or string.find(candidate, "'", 1, true)) then
                         bestSpecialWord = candidate
                     elseif #candidate < shortestNormalLen then
@@ -463,7 +484,7 @@ function copyword(bruteforce)
         local finalword = bestSpecialWord or shortestNormalWord
 
         if finalword then
-            sessionUsedWords[finalword] = true -- Запоминаем за O(1)
+            sessionUsedWords[finalword] = true 
             matchLabel:Set("Current Match: " .. finalword:upper())
             
             if autotype and isMyTurn then
