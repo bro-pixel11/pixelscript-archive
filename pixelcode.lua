@@ -671,16 +671,20 @@ task.defer(function()
     end
 end)
 
--- === DEBUG PRINT ALL TEXTLABELS ===
+-- === DEBUG PRINT ALL VISIBLE UI ELEMENTS ===
 task.defer(function()
-    task_wait(5)
-    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if playerGui then
-        for _, v in ipairs(playerGui:GetDescendants()) do
-            if v:IsA("TextLabel") then
-                print(v:GetFullName())
-                print("TEXT:", v.Text)
-                print("--------------------")
+    while task.wait(0.2) do
+        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if playerGui then
+            for _,v in ipairs(playerGui:GetDescendants()) do
+                if (v:IsA("TextLabel") or v:IsA("TextButton") or v:IsA("TextBox"))
+                    and v.Visible
+                    and v.Text ~= "" then
+
+                    print(v.ClassName, v:GetFullName())
+                    print("TEXT:", v.Text)
+                    print("----------------")
+                end
             end
         end
     end
