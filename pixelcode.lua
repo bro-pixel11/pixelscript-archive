@@ -147,7 +147,7 @@ local jitterEnabled = false
 local jitterIntensity = 0.05 
 local rngVariationPercent = 0 
 
-local lastChunk = ""
+local lastChunk = "WAITING"
 local lastTypeTime = 0
 local wasMyTurn = false
 local isTyping = false 
@@ -175,33 +175,26 @@ if Games then Games = Games:WaitForChild("Games", 10) end
 
 -- === HELPERS & CORE LOGIC ===
 
--- ПРЯМОЙ ПОИСК СЛОГА ИЗ PlayerGui (ДЛЯ БЫСТРОЙ ОЧИСТКИ)
-local function getChunk()
-    local localPlayer = Players.LocalPlayer
-    if not localPlayer then return nil end
-    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return nil end
+-- КЭШИРОВАННЫЙ ПОИСК СЛОГА ИЗ ПАМЯТИ (ОПТИМИЗАЦИЯ №1)
+local cachedUpdateFunc = nil
 
-    -- 1. Сначала сканируем GUI экран игрока
-    for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "MainUI"}) do
-        local gameGui = playerGui:FindFirstChild(guiName)
-        if gameGui then
-            for _, v in pairs(gameGui:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Visible and v.Parent and (v.Parent.Name == "InfoFrame" or v.Name == "Prompt" or v.Name == "Frame") then
-                    local txt = v.Text:gsub("%s+", ""):lower()
-                    if #txt >= 2 and #txt <= 5 and not txt:find("turn") and not txt:find("быстро") and not txt:find("ходи") then
-                        return txt
-                    end
+local function getChunk()
+    if cachedUpdateFunc then
+        local ok, prompt = pcall(function()
+            for _, up in pairs(debug.getupvalues(cachedUpdateFunc)) do
+                if type(up) == "table" and up.Prompt and up.Prompt ~= "" then 
+                    return tostring(up.Prompt):lower() 
                 end
             end
-        end
+        end)
+        if ok and prompt and prompt ~= "" then return prompt end
     end
 
-    -- 2. Резерв через GC
     for _, v in pairs(getgc(true)) do
         if type(v) == "function" then
             local info = debug.getinfo(v)
             if info and info.name == "updateInfoFrame" then
+                cachedUpdateFunc = v
                 for _, up in pairs(debug.getupvalues(v)) do
                     if type(up) == "table" and up.Prompt and up.Prompt ~= "" then 
                         return tostring(up.Prompt):lower() 
@@ -281,7 +274,7 @@ local function typeWordMobile(word, targetPrompt)
         if char == "-" then
             keyCode = Enum.KeyCode.Minus
         elseif char == "'" then
-            keyCode = Enum.KeyCode.Quote
+            keyCode = Enum.Quote
         else
             keyCode = Enum.KeyCode[char:upper()]
         end
@@ -328,35 +321,32 @@ local function typeWordMobile(word, targetPrompt)
     isTyping = false 
 end
 
--- === ЛОГИКА ПОИСКА И ОЧИСТКИ (РЕЖИМ WAITING) ===
+-- === ЛОГИКА ПОИСКА СЛОВ И СБРОСА ===
 local function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    -- === РЕЖИМ WAITING: Когда раунд окончен или промпт исчез с экрана ===
     if not contains or contains == "" then 
         if lastChunk ~= "WAITING" then
-            sessionUsedWords = {} -- <--- СБРОС СЛОВ ПРИ ИСЧЕЗНОВЕНИИ UI
+            sessionUsedWords = {} 
             lastChunk = "WAITING" 
             wasMyTurn = false
             
-            if promptLabel then promptLabel:Set("Current Prompt: WAITING...") end
+            if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
             if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
             if matchLabel then matchLabel:Set("Current Match: Waiting for game...") end
         end
         return 
     end
 
-    -- === РЕЖИМ ИГРЫ: Появился актуальный промпт ===
-    local turnSwitchedToMe = (isMyTurn and not wasMyTurn)
     wasMyTurn = isMyTurn
-
     local currentTime = os.clock()
-    if currentTime - lastTypeTime > 4 then 
-        if lastChunk ~= "WAITING" then lastChunk = "" end 
+
+    if currentTime - lastTypeTime > 5 and lastChunk == contains then
+        sessionUsedWords = {}
     end
 
-    if lastChunk ~= contains or bruteforce or turnSwitchedToMe then
+    if lastChunk ~= contains or bruteforce then
         lastChunk = contains
         lastTypeTime = currentTime
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
@@ -365,10 +355,11 @@ local function copyword(bruteforce)
         local specialMatches = {}
         local normalMatches = {}
         
+        -- Быстрый фильтр (ОПТИМИЗАЦИЯ №2: Проверка длины и использования ДО string.find)
         for i = 1, #globalWordsList do
             local candidate = globalWordsList[i]
-            if string.find(candidate, promptLower, 1, true) then
-                if not sessionUsedWords[candidate] and #candidate <= lettercap then
+            if #candidate <= lettercap and not sessionUsedWords[candidate] then
+                if string.find(candidate, promptLower, 1, true) then
                     if string.find(candidate, "-", 1, true) or string.find(candidate, "'", 1, true) then
                         table.insert(specialMatches, candidate)
                     else
@@ -558,7 +549,7 @@ if Games then
                     end)
 
                     task.wait(1)
-                    sessionUsedWords = {}
+                    sessionUsedWords = {} 
                     lastChunk = "WAITING"
                     wasMyTurn = false
                     isTyping = false
@@ -571,23 +562,30 @@ if Games then
     end
 end
 
--- === ANTI-DUPE ===
+-- === ANTI-DUPE (ОПТИМИЗАЦИЯ №3: Точечное сканирование конкретных GUI без глубокого перебора всего дерева) ===
 task.spawn(function()
     while task.wait(0.8) do
         if not autosearch then continue end
         
         local localPlayer = Players.LocalPlayer
         local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
-        local gameGui = playerGui and (playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI"))
+        if not playerGui then continue end
+
+        local targetGui = playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI")
         
-        if gameGui then
-            for _, v in pairs(gameGui:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Visible and #v.Text >= 2 and v.Parent and v.Parent.Name ~= "Rayfield" then
-                    local text = v.Text:gsub("%s+", "")
-                    if text == text:upper() and not text:find("%d") and not text:find("TURN") and not text:find("ХОД") then
-                        local lowerWord = text:lower()
-                        if not sessionUsedWords[lowerWord] then
-                            sessionUsedWords[lowerWord] = true
+        if targetGui then
+            -- Сканируем только детей контейнера игры
+            for _, child in ipairs(targetGui:GetChildren()) do
+                if child:IsA("Frame") or child:IsA("ScrollingFrame") then
+                    for _, v in ipairs(child:GetChildren()) do
+                        if v:IsA("TextLabel") and v.Visible and #v.Text >= 2 then
+                            local text = v.Text:gsub("%s+", "")
+                            if text == text:upper() and not text:find("%d") and not text:find("TURN") and not text:find("ХОД") then
+                                local lowerWord = text:lower()
+                                if not sessionUsedWords[lowerWord] then
+                                    sessionUsedWords[lowerWord] = true
+                                end
+                            end
                         end
                     end
                 end
