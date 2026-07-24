@@ -147,7 +147,7 @@ local jitterEnabled = false
 local jitterIntensity = 0.05 
 local rngVariationPercent = 0 
 
-local lastChunk = "WAITING"
+local lastChunk = ""
 local lastTypeTime = 0
 local wasMyTurn = false
 local isTyping = false 
@@ -174,27 +174,36 @@ local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
 -- === HELPERS & CORE LOGIC ===
-local cachedUpdateFunc = nil
 
+-- ПРЯМОЙ ПОИСК СЛОГА ИЗ PlayerGui (ДЛЯ БЫСТРОЙ ОЧИСТКИ)
 local function getChunk()
-    if cachedUpdateFunc then
-        local ok, prompt = pcall(function()
-            for _, up in pairs(debug.getupvalues(cachedUpdateFunc)) do
-                if type(up) == "table" and up.Prompt then 
-                    return tostring(up.Prompt):lower() 
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then return nil end
+    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+
+    -- 1. Сначала сканируем GUI экран игрока
+    for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "MainUI"}) do
+        local gameGui = playerGui:FindFirstChild(guiName)
+        if gameGui then
+            for _, v in pairs(gameGui:GetDescendants()) do
+                if v:IsA("TextLabel") and v.Visible and v.Parent and (v.Parent.Name == "InfoFrame" or v.Name == "Prompt" or v.Name == "Frame") then
+                    local txt = v.Text:gsub("%s+", ""):lower()
+                    if #txt >= 2 and #txt <= 5 and not txt:find("turn") and not txt:find("быстро") and not txt:find("ходи") then
+                        return txt
+                    end
                 end
             end
-        end)
-        if ok and prompt and prompt ~= "" then return prompt end
+        end
     end
 
+    -- 2. Резерв через GC
     for _, v in pairs(getgc(true)) do
         if type(v) == "function" then
             local info = debug.getinfo(v)
             if info and info.name == "updateInfoFrame" then
                 for _, up in pairs(debug.getupvalues(v)) do
-                    if type(up) == "table" and up.Prompt then
-                        cachedUpdateFunc = v
+                    if type(up) == "table" and up.Prompt and up.Prompt ~= "" then 
                         return tostring(up.Prompt):lower() 
                     end
                 end
@@ -319,31 +328,35 @@ local function typeWordMobile(word, targetPrompt)
     isTyping = false 
 end
 
--- === ЛОГИКА ПОИСКА СЛОВ ===
+-- === ЛОГИКА ПОИСКА И ОЧИСТКИ (РЕЖИМ WAITING) ===
 local function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    -- Если раунд закончился или промпта нет
+    -- === РЕЖИМ WAITING: Когда раунд окончен или промпт исчез с экрана ===
     if not contains or contains == "" then 
         if lastChunk ~= "WAITING" then
-            sessionUsedWords = {} 
+            sessionUsedWords = {} -- <--- СБРОС СЛОВ ПРИ ИСЧЕЗНОВЕНИИ UI
             lastChunk = "WAITING" 
             wasMyTurn = false
             
-            if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
+            if promptLabel then promptLabel:Set("Current Prompt: WAITING...") end
             if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
             if matchLabel then matchLabel:Set("Current Match: Waiting for game...") end
         end
         return 
     end
 
+    -- === РЕЖИМ ИГРЫ: Появился актуальный промпт ===
+    local turnSwitchedToMe = (isMyTurn and not wasMyTurn)
     wasMyTurn = isMyTurn
 
     local currentTime = os.clock()
+    if currentTime - lastTypeTime > 4 then 
+        if lastChunk ~= "WAITING" then lastChunk = "" end 
+    end
 
-    -- Если появляется новый промпт или вышли из состояния WAITING
-    if (contains ~= lastChunk and contains ~= "") or bruteforce then
+    if lastChunk ~= contains or bruteforce or turnSwitchedToMe then
         lastChunk = contains
         lastTypeTime = currentTime
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
@@ -531,7 +544,7 @@ solutionsLabel = MainTab:CreateLabel("Solutions Found: 0")
 matchLabel = MainTab:CreateLabel("Current Match: None")
 MainTab:CreateSection("------------------")
 
--- === ФОНОВЫЙ ПОТОК AUTO JOIN + АВТО-СБРОС СОСТОЯНИЙ ===
+-- === ФОНОВЫЙ ПОТОК AUTO JOIN ===
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
@@ -552,7 +565,6 @@ if Games then
                     
                     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
                     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
-                    print("[Auto-Join]: Зашли в комнату: " .. tostring(gameRoomID) .. " | Память и промпт сброшены")
                 end)
             end
         end)
@@ -561,7 +573,9 @@ end
 
 -- === ANTI-DUPE ===
 task.spawn(function()
-    while task.wait(0.3) do
+    while task.wait(0.8) do
+        if not autosearch then continue end
+        
         local localPlayer = Players.LocalPlayer
         local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
         local gameGui = playerGui and (playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI"))
@@ -574,7 +588,6 @@ task.spawn(function()
                         local lowerWord = text:lower()
                         if not sessionUsedWords[lowerWord] then
                             sessionUsedWords[lowerWord] = true
-                            print("[Anti-Dupe]: " .. lowerWord)
                         end
                     end
                 end
