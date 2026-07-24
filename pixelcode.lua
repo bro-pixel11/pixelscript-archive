@@ -200,44 +200,64 @@ if Games then Games = Games:WaitForChild("Games", 10) end
 
 -- === HELPERS & CORE LOGIC ===
 
-local cachedUpdateFunc = nil
-
--- Проверка жизнеспособности таблицы upvalues и принадлежащих ей объектов в Дереве игры (game)
-local function isUpvalueAlive(upvalueTable)
-    if type(upvalueTable) ~= "table" then return false end
+local function isGameGuiActive()
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then return nil end
     
-    local hasInstance = false
-    local isAlive = false
+    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+
+    for _, name in ipairs({"GameUI", "DesktopUI", "MobileUI", "Game"}) do
+        local gui = playerGui:FindFirstChild(name)
+        if gui and gui.Enabled ~= false then
+            return gui
+        end
+    end
+
+    for _, child in ipairs(playerGui:GetChildren()) do
+        if child:IsA("ScreenGui") and child.Enabled and child.Name ~= "Rayfield" and child.Name ~= "Chat" then
+            return child
+        end
+    end
+
+    return nil
+end
+
+local function isUpvalueBelongsToActiveGui(upvalueTable, activeGui)
+    if type(upvalueTable) ~= "table" or not activeGui then return false end
+
+    local foundValidInstance = false
 
     for _, val in pairs(upvalueTable) do
         if typeof(val) == "Instance" then
-            hasInstance = true
-            if val:IsDescendantOf(game) then
-                isAlive = true
-                break
+            if val:IsDescendantOf(activeGui) then
+                return true
             end
+            foundValidInstance = true
         elseif type(val) == "table" then
             for _, subVal in pairs(val) do
                 if typeof(subVal) == "Instance" then
-                    hasInstance = true
-                    if subVal:IsDescendantOf(game) then
-                        isAlive = true
-                        break
+                    if subVal:IsDescendantOf(activeGui) then
+                        return true
                     end
+                    foundValidInstance = true
                 end
             end
         end
     end
 
-    if hasInstance then
-        return isAlive
-    end
-    
-    return true
+    return not foundValidInstance
 end
 
+local cachedUpdateFunc = nil
+
 local function getChunk()
-    -- 1. Проверка сохраненного кэша с подтверждением валидности UI
+    local activeGui = isGameGuiActive()
+    if not activeGui then
+        cachedUpdateFunc = nil
+        return nil
+    end
+
     if cachedUpdateFunc then
         local isValid = false
         local currentPrompt = nil
@@ -247,9 +267,9 @@ local function getChunk()
             if upvalues then
                 for _, up in pairs(upvalues) do
                     if type(up) == "table" and up.Prompt ~= nil then 
-                        if isUpvalueAlive(up) then
+                        if isUpvalueBelongsToActiveGui(up, activeGui) then
                             local strPrompt = tostring(up.Prompt):lower():gsub("%s+", "")
-                            if strPrompt ~= "" and strPrompt ~= "nil" then
+                            if strPrompt ~= "" and strPrompt ~= "nil" and strPrompt ~= "waiting" then
                                 currentPrompt = strPrompt
                                 isValid = true
                             end
@@ -267,7 +287,6 @@ local function getChunk()
         end
     end
 
-    -- 2. Сканирование getgc() с конца массива (поиск самых свежих функций)
     local gcObjects = getgc(true)
     for i = #gcObjects, 1, -1 do
         local v = gcObjects[i]
@@ -278,9 +297,9 @@ local function getChunk()
                 if upvalues then
                     for _, up in pairs(upvalues) do
                         if type(up) == "table" and up.Prompt ~= nil then 
-                            if isUpvalueAlive(up) then
+                            if isUpvalueBelongsToActiveGui(up, activeGui) then
                                 local strPrompt = tostring(up.Prompt):lower():gsub("%s+", "")
-                                if strPrompt ~= "" and strPrompt ~= "nil" then
+                                if strPrompt ~= "" and strPrompt ~= "nil" and strPrompt ~= "waiting" then
                                     cachedUpdateFunc = v
                                     return strPrompt
                                 end
