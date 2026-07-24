@@ -23,6 +23,7 @@ local math_floor = math.floor
 local os_time = os.time
 local os_clock = os.clock
 local pcall = pcall
+local rawget = rawget
 local type = type
 local tostring = tostring
 
@@ -87,8 +88,6 @@ if not isAuthenticated then
     return
 end
 
-print("Авторизация прошла успешно! Загрузка Bro-PixelScript...")
-
 -- === ОСНОВНОЙ СКРИПТ ===
 getgenv().deletewhendupefound = true
 
@@ -124,14 +123,36 @@ local statusLabel = MainTab:CreateLabel("Loading dictionary...")
 
 -- Таблицы данных
 local globalWordsList = {} 
+local dictIndex = {} -- Быстрый индекс: dictIndex["sub"] = {word1, word2, ...}
 local sessionUsedWords = {}
 local specialMatches = {}
 local normalMatches = {}
 
--- === КЭШ ИГРОВЫХ GUI ЭЛЕМЕНТОВ ===
-local cachedPromptLabel = nil
+-- === КЭШ СОСТОЯНИЯ ===
+local cachedStateTable = nil
 local cachedTextBox = nil
-local promptConnection = nil
+
+-- === ИНДЕКСАЦИЯ СЛОВАРЯ ДЛЯ МГНОВЕННОГО ПОИСКА ===
+local function indexWord(word)
+    local len = #word
+    local seen = {}
+    
+    -- Индексируем подстроки длиной 2 и 3 символа
+    for subLen = 2, 3 do
+        for i = 1, len - subLen + 1 do
+            local sub = string_sub(word, i, i + subLen - 1)
+            if not seen[sub] then
+                seen[sub] = true
+                local bucket = dictIndex[sub]
+                if not bucket then
+                    bucket = {}
+                    dictIndex[sub] = bucket
+                end
+                table_insert(bucket, word)
+            end
+        end
+    end
+end
 
 -- === АСИНХРОННАЯ ЗАГРУЗКА И ОЧИСТКА СЛОВАРЯ ===
 local function loadDictionaryAsync(url)
@@ -148,13 +169,14 @@ local function loadDictionaryAsync(url)
             if word ~= "" then
                 total = total + 1
                 table_insert(globalWordsList, word)
+                indexWord(word)
                 
                 if total % 5000 == 0 then
                     task_wait()
                 end
             end
         end
-        statusLabel:Set("Dictionary: " .. total .. " words (Ready)")
+        statusLabel:Set("Dictionary: " .. total .. " words (Indexed)")
     end)
 end
 
@@ -185,68 +207,6 @@ local speedWordDelay = 60 / (typingWPM * 5)
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === ОБНОВЛЕНИЕ КЭША ИГРОВЫХ ЭЛЕМЕНТОВ ===
-local UI_NAMES = {"GameUI", "DesktopUI", "MobileUI", "MainUI"}
-
-local function updateGuiCache()
-    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return end
-
-    -- Поиск и кэширование Prompt Label
-    if not cachedPromptLabel or not cachedPromptLabel.Parent then
-        if promptConnection then
-            promptConnection:Disconnect()
-            promptConnection = nil
-        end
-        cachedPromptLabel = nil
-        for i = 1, #UI_NAMES do
-            local gameGui = playerGui:FindFirstChild(UI_NAMES[i])
-            if gameGui then
-                local descendants = gameGui:GetDescendants()
-                for j = 1, #descendants do
-                    local v = descendants[j]
-                    if v:IsA("TextLabel") and v.Parent then
-                        local pName = v.Parent.Name
-                        if pName == "InfoFrame" or v.Name == "Prompt" or v.Name == "Frame" then
-                            cachedPromptLabel = v
-                            break
-                        end
-                    end
-                end
-            end
-            if cachedPromptLabel then break end
-        end
-    end
-
-    -- Поиск и кэширование TextBox
-    if not cachedTextBox or not cachedTextBox.Parent then
-        cachedTextBox = nil
-        for i = 1, #UI_NAMES do
-            local gameGui = playerGui:FindFirstChild(UI_NAMES[i])
-            if gameGui then
-                local descendants = gameGui:GetDescendants()
-                for j = 1, #descendants do
-                    local v = descendants[j]
-                    if v:IsA("TextBox") and v.Parent and v.Parent.Name ~= "Rayfield" then
-                        cachedTextBox = v
-                        break
-                    end
-                end
-            end
-            if cachedTextBox then break end
-        end
-    end
-
-    -- Подключение события при изменении текста промпта
-    if cachedPromptLabel and not promptConnection then
-        promptConnection = cachedPromptLabel:GetPropertyChangedSignal("Text"):Connect(function()
-            if autosearch then
-                task.defer(pcall, copyword)
-            end
-        end)
-    end
-end
-
 -- === UI ELEMENTS (MAIN TAB) ===
 MainTab:CreateInput({
    Name = "Letter Cap",
@@ -260,7 +220,7 @@ MainTab:CreateToggle({
    Callback = function(Value)
       autosearch = Value
       if autosearch then
-          task.defer(pcall, copyword)
+          task.defer(copyword)
       end
    end,
 })
@@ -360,82 +320,40 @@ local solutionsLabel = MainTab:CreateLabel("Solutions Found: 0")
 local matchLabel = MainTab:CreateLabel("Current Match: None")
 MainTab:CreateSection("------------------")
 
--- === HELPERS ===
-local function getChunk()
-    if cachedPromptLabel and cachedPromptLabel.Parent and cachedPromptLabel.Visible then
-        local txt = string_lower(string_gsub(cachedPromptLabel.Text, "%s+", ""))
-        print("--------------------")
-        print("PATH:", cachedPromptLabel:GetFullName())
-        print("TEXT:", cachedPromptLabel.Text)
-        print("--------------------")
-
-        local chunk = txt:match("containing:([a-z]+)")
-        if chunk then
-            return chunk
-        end
-
-        chunk = txt:match("containing:%s*([a-z]+)")
-        if chunk then
-            return chunk
-        end
-
-        chunk = txt:match("\n([a-z]+)")
-        if chunk then
-            return chunk
-        end
-
-        return nil
-    end
-
-    updateGuiCache()
-
-    if cachedPromptLabel and cachedPromptLabel.Parent and cachedPromptLabel.Visible then
-        local txt = string_lower(string_gsub(cachedPromptLabel.Text, "%s+", ""))
-        print("--------------------")
-        print("PATH:", cachedPromptLabel:GetFullName())
-        print("TEXT:", cachedPromptLabel.Text)
-        print("--------------------")
-
-        local chunk = txt:match("containing:([a-z]+)")
-        if chunk then
-            return chunk
-        end
-
-        chunk = txt:match("containing:%s*([a-z]+)")
-        if chunk then
-            return chunk
-        end
-
-        chunk = txt:match("\n([a-z]+)")
-        if chunk then
-            return chunk
-        end
-
-        return nil
-    end
-
-    return nil
-end
-
-local function getGameStatus()
-    local prompt = getChunk()
-    if not prompt or prompt == "" then return nil, false end
-    
-    local isMyTurn = false
-    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if playerGui then
-        local descendants = playerGui:GetDescendants()
-        for i = 1, #descendants do
-            local v = descendants[i]
-            if v:IsA("TextLabel") and v.Visible and v.Parent and v.Parent.Name ~= "Rayfield" then
-                local text = string_lower(v.Text)
-                if string_find(text, "quick") or string_find(text, "быстро") or string_find(text, "your turn") or string_find(text, "ходи") then
-                    isMyTurn = true
-                    break
-                end
+-- === ОПТИМИЗИРОВАННЫЙ GC КЭШ СОСТОЯНИЯ ИГРЫ ===
+local function initGCState()
+    for _, v in pairs(getgc(true)) do
+        if type(v) == "table" then
+            local prompt = rawget(v, "Prompt")
+            if prompt ~= nil then
+                cachedStateTable = v
+                return true
             end
         end
     end
+    cachedStateTable = nil
+    return false
+end
+
+local function getGameStatus()
+    if not cachedStateTable or rawget(cachedStateTable, "Prompt") == nil then
+        if not initGCState() then
+            return nil, false
+        end
+    end
+
+    local rawPrompt = cachedStateTable.Prompt
+    if not rawPrompt then
+        cachedStateTable = nil
+        return nil, false
+    end
+
+    local prompt = string_lower(string_gsub(tostring(rawPrompt), "%s+", ""))
+    if prompt == "" then
+        return nil, false
+    end
+
+    local isMyTurn = (cachedStateTable.PlayerID == LocalPlayer.UserId)
     return prompt, isMyTurn
 end
 
@@ -443,8 +361,23 @@ local function getGameTextBox()
     if cachedTextBox and cachedTextBox.Parent and cachedTextBox.Visible then
         return cachedTextBox
     end
-    updateGuiCache()
-    return cachedTextBox
+
+    cachedTextBox = nil
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+
+    local gameUI = playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI") or playerGui:FindFirstChild("MainUI")
+    if gameUI then
+        local descendants = gameUI:GetDescendants()
+        for j = 1, #descendants do
+            local v = descendants[j]
+            if v:IsA("TextBox") and v.Parent and v.Parent.Name ~= "Rayfield" then
+                cachedTextBox = v
+                return cachedTextBox
+            end
+        end
+    end
+    return nil
 end
 
 -- === TYPING LOGIC ===
@@ -529,7 +462,6 @@ function copyword(bruteforce)
     if not contains or contains == "" then 
         if lastChunk ~= "WAITING" then
             table_clear(sessionUsedWords)
-            print("[DEBUG] sessionUsedWords:", next(sessionUsedWords))
             
             lastChunk = "WAITING" 
             wasMyTurn = false
@@ -559,9 +491,12 @@ function copyword(bruteforce)
         table_clear(specialMatches)
         table_clear(normalMatches)
         
-        local dictSize = #globalWordsList
+        -- ПОИСК ПО ПРЕИНДЕКСИРОВАННОМУ СЛОВАРЮ O(1) / O(k)
+        local candidates = dictIndex[promptLower] or globalWordsList
+        local dictSize = #candidates
+        
         for i = 1, dictSize do
-            local candidate = globalWordsList[i]
+            local candidate = candidates[i]
             if string_find(candidate, promptLower, 1, true) then
                 if not sessionUsedWords[candidate] and #candidate <= lettercap then
                     if string_find(candidate, "-", 1, true) or string_find(candidate, "'", 1, true) then
@@ -619,6 +554,7 @@ if Games then
 
                     task_wait(1) 
                     table_clear(sessionUsedWords)
+                    cachedStateTable = nil 
                     lastChunk = "WAITING"
                     wasMyTurn = false
                 end)
@@ -627,35 +563,11 @@ if Games then
     end
 end
 
--- === РЕЗЕРВНЫЙ ЦИКЛ ОБНОВЛЕНИЯ UI И ПОИСКА ===
+-- === ОСНОВНОЙ ЦИКЛ ПОИСКА СЛОВ ===
 task.defer(function()
-    while task_wait(0.9) do
-        updateGuiCache()
+    while task_wait(0.35) do
         if autosearch then
-            task.defer(pcall, copyword)
-        end
-    end
-end)
-
--- === ANTI-DUPE ===
-task.defer(function()
-    while task_wait(0.8) do
-        if not autosearch then continue end
-        
-        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-        local gameGui = playerGui and (playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI"))
-        
-        if gameGui then
-            local descendants = gameGui:GetDescendants()
-            for i = 1, #descendants do
-                local v = descendants[i]
-                if v:IsA("TextLabel") and v.Visible and #v.Text >= 2 then
-                    local text = string_gsub(v.Text, "%s+", "")
-                    if text == string_upper(text) and not string_find(text, "%d") and not string_find(text, "TURN") and not string_find(text, "ХОД") then
-                        sessionUsedWords[string_lower(text)] = true
-                    end
-                end
-            end
+            task.defer(copyword)
         end
     end
 end)
@@ -668,28 +580,5 @@ task.defer(function()
         local minutes = math_floor((elapsed % 3600) / 60)
         local seconds = elapsed % 60
         elapsedLabel:Set(string_format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds))
-    end
-end)
-
--- === DEBUG PRINT CHANGED VISIBLE UI TEXTS ===
-local printed = {}
-
-task.spawn(function()
-    while task.wait(0.1) do
-        local gui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-        if gui then
-            for _,v in ipairs(gui:GetDescendants()) do
-                if (v:IsA("TextLabel") or v:IsA("TextButton") or v:IsA("TextBox")) and v.Visible then
-                    local t = tostring(v.Text)
-
-                    if t ~= "" and printed[v] ~= t then
-                        printed[v] = t
-                        print("PATH:", v:GetFullName())
-                        print("TEXT:", t)
-                        print("----------------")
-                    end
-                end
-            end
-        end
     end
 end)
