@@ -147,8 +147,7 @@ local jitterEnabled = false
 local jitterIntensity = 0.05 
 local rngVariationPercent = 0 
 
-local lastChunk = ""
-local ignorePrompt = ""
+local lastChunk = "WAITING"
 local lastTypeTime = 0
 local wasMyTurn = false
 local isTyping = false 
@@ -187,7 +186,6 @@ local function getChunk()
             end
         end)
         if ok and prompt and prompt ~= "" then return prompt end
-        cachedUpdateFunc = nil
     end
 
     for _, v in pairs(getgc(true)) do
@@ -329,13 +327,9 @@ local function copyword(bruteforce)
     -- Если раунд закончился или промпта нет
     if not contains or contains == "" then 
         if lastChunk ~= "WAITING" then
-            if lastChunk ~= "" and lastChunk ~= "WAITING" then
-                ignorePrompt = lastChunk
-            end
             sessionUsedWords = {} 
             lastChunk = "WAITING" 
             wasMyTurn = false
-            cachedUpdateFunc = nil
             
             if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
             if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
@@ -344,20 +338,11 @@ local function copyword(bruteforce)
         return 
     end
 
-    -- Защита: если промпт равен заблокированному с прошлого раунда, игнорируем его
-    if contains == ignorePrompt then
-        return
-    else
-        ignorePrompt = ""
-    end
-
     wasMyTurn = isMyTurn
 
     local currentTime = os.clock()
-    if currentTime - lastTypeTime > 4 then 
-        if lastChunk ~= "WAITING" then lastChunk = "" end 
-    end
 
+    -- Если появляется новый промпт или вышли из состояния WAITING
     if (contains ~= lastChunk and contains ~= "") or bruteforce then
         lastChunk = contains
         lastTypeTime = currentTime
@@ -457,9 +442,7 @@ MainTab:CreateToggle({
                 if autoJoinDelay > 0 then task.wait(autoJoinDelay) end
                 sessionUsedWords = {} 
                 lastChunk = "WAITING"
-                ignorePrompt = ""
                 wasMyTurn = false
-                cachedUpdateFunc = nil
                 isTyping = false
                 pcall(function()
                     for i = -1, -20, -1 do 
@@ -563,12 +546,8 @@ if Games then
 
                     task.wait(1)
                     sessionUsedWords = {}
-                    if lastChunk ~= "" and lastChunk ~= "WAITING" then
-                        ignorePrompt = lastChunk
-                    end
                     lastChunk = "WAITING"
                     wasMyTurn = false
-                    cachedUpdateFunc = nil
                     isTyping = false
                     
                     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
