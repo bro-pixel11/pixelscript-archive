@@ -173,6 +173,9 @@ local wasMyTurn = false
 local isTyping = false 
 local typingSessionId = 0
 
+-- Переменная для умного кэширования функции из GC
+local cached_updateInfoFrame = nil
+
 local checkWordDelay = 1.0 
 local startTime = os.time()
 local totalTurns = 0
@@ -198,20 +201,34 @@ local function resetRoundState()
     lastHandledPrompt = ""
     wasMyTurn = false
     isTyping = false
+    cached_updateInfoFrame = nil -- Сбрасываем кэш функции при старте нового раунда
     
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
 end
 
--- === ЛОГИКА ПОЛУЧЕНИЯ ХОДА И ПРОМПТА ===
+-- === ЛОГИКА ПОЛУЧЕНИЯ ХОДА И ПРОМПТА С УМНЫМ КЭШИРОВАНИЕМ ===
 
 local function GetTurn()
     local s, r = pcall(function()
+        -- 1. Сначала пытаемся быстро прочитать данные из закэшированной функции
+        if cached_updateInfoFrame then
+            for _, vv in ipairs(debug_getupvalues(cached_updateInfoFrame)) do
+                if type(vv) == "table" and vv.PlayerID ~= nil then 
+                    return vv.PlayerID 
+                end
+            end
+        end
+
+        -- 2. Если кэша нет или он устарел, ищем заново через getgc()
         for _, v in pairs(getgc()) do
             if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
+                cached_updateInfoFrame = v -- Закэшировали найденную функцию
                 for __, vv in ipairs(debug_getupvalues(v)) do
-                    if type(vv) == "table" and vv.PlayerID ~= nil then return vv.PlayerID end
+                    if type(vv) == "table" and vv.PlayerID ~= nil then 
+                        return vv.PlayerID 
+                    end
                 end
             end
         end
@@ -222,16 +239,30 @@ end
 
 local function GetLetters()
     local s, r = pcall(function()
+        -- 1. Быстрая проверка через закэшированную функцию
+        if cached_updateInfoFrame then
+            for _, vv in pairs(debug_getupvalues(cached_updateInfoFrame)) do
+                if type(vv) == "table" and vv.Prompt ~= nil then 
+                    return vv.Prompt 
+                end
+            end
+        end
+
+        -- 2. Поиск через getgc(), если кэша нет
         for _, v in pairs(getgc()) do
             if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
+                cached_updateInfoFrame = v -- Закэшировали найденную функцию
                 for __, vv in pairs(debug_getupvalues(v)) do
-                    if type(vv) == "table" and vv.Prompt ~= nil then return vv.Prompt end
+                    if type(vv) == "table" and vv.Prompt ~= nil then 
+                        return vv.Prompt 
+                    end
                 end
             end
         end
     end)
     if s and r then return r end
 
+    -- Резервный вариант через интерфейс
     local localPlayer = Players.LocalPlayer
     local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
@@ -369,7 +400,7 @@ local function typeWordMobile(word, targetPrompt)
             totalTurns = totalTurns + 1
             if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
             
-            -- СБРОС: Слово отправлено, готовность к повторному промпту в следующем ходу
+            -- СБРОС: Готовимся к следующему промпту (даже если он совпадёт)
             lastHandledPrompt = ""
         else
             if textBox then textBox.Text = "" end
