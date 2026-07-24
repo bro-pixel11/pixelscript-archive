@@ -364,7 +364,10 @@ MainTab:CreateSection("------------------")
 local function getChunk()
     if cachedPromptLabel and cachedPromptLabel.Parent and cachedPromptLabel.Visible then
         local txt = string_lower(string_gsub(cachedPromptLabel.Text, "%s+", ""))
+        print("--------------------")
+        print("PATH:", cachedPromptLabel:GetFullName())
         print("TEXT:", cachedPromptLabel.Text)
+        print("--------------------")
 
         local chunk = txt:match("containing:([a-z]+)")
         if chunk then
@@ -388,7 +391,10 @@ local function getChunk()
 
     if cachedPromptLabel and cachedPromptLabel.Parent and cachedPromptLabel.Visible then
         local txt = string_lower(string_gsub(cachedPromptLabel.Text, "%s+", ""))
+        print("--------------------")
+        print("PATH:", cachedPromptLabel:GetFullName())
         print("TEXT:", cachedPromptLabel.Text)
+        print("--------------------")
 
         local chunk = txt:match("containing:([a-z]+)")
         if chunk then
