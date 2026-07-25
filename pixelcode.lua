@@ -348,10 +348,10 @@ end
 
 local function getGameStatus()
     local rawPrompt = GetLetters()
-    if not rawPrompt or rawPrompt == "" then return nil, false end
+    if not rawPrompt or type(rawPrompt) ~= "string" then return nil, false end
 
-    local prompt = tostring(rawPrompt):lower():gsub("%s+", "")
-    if prompt == "" or prompt == "nil" or prompt == "waiting" then return nil, false end
+    local prompt = rawPrompt:lower():gsub("%s+", "")
+    if prompt == "" or prompt == "waiting" then return nil, false end
 
     local localPlayer = Players.LocalPlayer
     if not localPlayer then return nil, false end
