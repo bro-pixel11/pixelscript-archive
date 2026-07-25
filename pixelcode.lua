@@ -8,6 +8,7 @@ local math_random = math.random
 local math_floor = math.floor
 local math_huge = math.huge
 local table_clear = table.clear
+local table_insert = table.insert
 local task_spawn = task.spawn
 local task_wait = task.wait
 local os_time = os.time
@@ -129,6 +130,7 @@ local SettingsTab = Window:CreateTab("Settings", nil)
 local statusLabel = MainTab:CreateLabel("Loading and indexing dictionary...")
 
 local globalWordsList = {} 
+local PromptIndex = {}
 
 local function loadDictionaryAsync(url)
     task.spawn(function()
@@ -139,18 +141,40 @@ local function loadDictionaryAsync(url)
         end
         
         local total = 0
+        local seenSubstrings = {}
+
         for word in raw:gmatch("[^\r\n]+") do
             word = word:gsub("%s+", ""):lower()
-            if word ~= "" then
+            local wordLen = #word
+            if wordLen >= 2 then
                 total = total + 1
-                table.insert(globalWordsList, word)
+                table_insert(globalWordsList, word)
                 
-                if total % 5000 == 0 then
+                table_clear(seenSubstrings)
+
+                -- Генерация ключей длиной 2 и 3 буквы
+                for len = 2, 3 do
+                    for i = 1, wordLen - len + 1 do
+                        local sub = string_sub(word, i, i + len - 1)
+                        if not seenSubstrings[sub] then
+                            seenSubstrings[sub] = true
+                            local list = PromptIndex[sub]
+                            if not list then
+                                list = {}
+                                PromptIndex[sub] = list
+                            end
+                            table_insert(list, word)
+                        end
+                    end
+                end
+                
+                if total % 4000 == 0 then
+                    statusLabel:Set("Indexing: " .. total .. " words...")
                     task.wait()
                 end
             end
         end
-        statusLabel:Set("Dictionary: " .. total .. " words (Ready)")
+        statusLabel:Set("Dictionary: " .. total .. " words (Indexed & Ready)")
     end)
 end
 
@@ -173,7 +197,6 @@ local wasMyTurn = false
 local isTyping = false 
 local typingSessionId = 0
 
--- Переменная для умного кэширования функции из GC
 local cached_updateInfoFrame = nil
 
 local checkWordDelay = 1.0 
@@ -201,18 +224,17 @@ local function resetRoundState()
     lastHandledPrompt = ""
     wasMyTurn = false
     isTyping = false
-    cached_updateInfoFrame = nil -- Сбрасываем кэш функции при старте нового раунда
+    cached_updateInfoFrame = nil
     
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
 end
 
--- === ЛОГИКА ПОЛУЧЕНИЯ ХОДА И ПРОМПТА С УМНЫМ КЭШИРОВАНИЕМ ===
+-- === ЛОГИКА ПОЛУЧЕНИЯ ХОДА И ПРОМПТА ===
 
 local function GetTurn()
     local s, r = pcall(function()
-        -- 1. Сначала пытаемся быстро прочитать данные из закэшированной функции
         if cached_updateInfoFrame then
             for _, vv in ipairs(debug_getupvalues(cached_updateInfoFrame)) do
                 if type(vv) == "table" and vv.PlayerID ~= nil then 
@@ -221,10 +243,9 @@ local function GetTurn()
             end
         end
 
-        -- 2. Если кэша нет или он устарел, ищем заново через getgc()
         for _, v in pairs(getgc()) do
             if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                cached_updateInfoFrame = v -- Закэшировали найденную функцию
+                cached_updateInfoFrame = v
                 for __, vv in ipairs(debug_getupvalues(v)) do
                     if type(vv) == "table" and vv.PlayerID ~= nil then 
                         return vv.PlayerID 
@@ -239,7 +260,6 @@ end
 
 local function GetLetters()
     local s, r = pcall(function()
-        -- 1. Быстрая проверка через закэшированную функцию
         if cached_updateInfoFrame then
             for _, vv in pairs(debug_getupvalues(cached_updateInfoFrame)) do
                 if type(vv) == "table" and vv.Prompt ~= nil then 
@@ -248,10 +268,9 @@ local function GetLetters()
             end
         end
 
-        -- 2. Поиск через getgc(), если кэша нет
         for _, v in pairs(getgc()) do
             if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                cached_updateInfoFrame = v -- Закэшировали найденную функцию
+                cached_updateInfoFrame = v
                 for __, vv in pairs(debug_getupvalues(v)) do
                     if type(vv) == "table" and vv.Prompt ~= nil then 
                         return vv.Prompt 
@@ -262,7 +281,6 @@ local function GetLetters()
     end)
     if s and r then return r end
 
-    -- Резервный вариант через интерфейс
     local localPlayer = Players.LocalPlayer
     local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
@@ -400,7 +418,6 @@ local function typeWordMobile(word, targetPrompt)
             totalTurns = totalTurns + 1
             if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
             
-            -- СБРОС: Готовимся к следующему промпту (даже если он совпадёт)
             lastHandledPrompt = ""
         else
             if textBox then textBox.Text = "" end
@@ -412,24 +429,21 @@ local function typeWordMobile(word, targetPrompt)
     end
 end
 
--- === ЛОГИКА ПОИСКА СЛОВ И СБРОСА ===
+-- === ЛОГИКА ПОИСКА СЛОВ (ИСПOЛЬЗУЕТ ИНДЕКС) ===
 local function copyword(bruteforce)
     if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
-    -- 1. Если промпта нет
     if not contains or contains == "" then 
         lastHandledPrompt = ""
         return 
     end
 
-    -- 2. Если сейчас НЕ наш ход
     if not isMyTurn then
         lastHandledPrompt = ""
         return
     end
 
-    -- 3. Наш ход
     wasMyTurn = true
 
     if contains ~= lastHandledPrompt or bruteforce then
@@ -441,14 +455,15 @@ local function copyword(bruteforce)
         local specialMatches = {}
         local normalMatches = {}
         
-        for i = 1, #globalWordsList do
-            local candidate = globalWordsList[i]
-            if #candidate <= lettercap and not sessionUsedWords[candidate] then
-                if string_find(candidate, promptLower, 1, true) then
+        local candidates = PromptIndex[promptLower]
+        if candidates then
+            for i = 1, #candidates do
+                local candidate = candidates[i]
+                if #candidate <= lettercap and not sessionUsedWords[candidate] then
                     if string_find(candidate, "-", 1, true) or string_find(candidate, "'", 1, true) then
-                        table.insert(specialMatches, candidate)
+                        table_insert(specialMatches, candidate)
                     else
-                        table.insert(normalMatches, candidate)
+                        table_insert(normalMatches, candidate)
                     end
                 end
             end
