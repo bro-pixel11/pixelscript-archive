@@ -24,89 +24,56 @@ local getgc = getgc
 local debug_getinfo = debug.getinfo
 local debug_getupvalues = debug.getupvalues
 
-local RbxAnalytics = game:GetService("RbxAnalyticsService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local Vim = game:GetService("VirtualInputManager")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- === RENDER API AUTHENTICATION SYSTEM ===
-local RENDER_API_URL = "https://roblox-key-api-zxnv.onrender.com" -- 👈 ВСТАВЬ СЮДА ССЫЛКУ НА СВОЙ RENDER
-
-local userHWID = RbxAnalytics:GetClientId()
+-- === NEW RENDER HWID & KEY AUTHENTICATION ===
+local API_URL = "https://roblox-key-api-zxnv.onrender.com/verify"
 local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
 
 if not userProvidedKey or userProvidedKey == "" then
-    Players.LocalPlayer:Kick("❌ Error: Key not found! Put getgenv().PixelKey = 'YOUR_KEY' before loadstring.")
+    Players.LocalPlayer:Kick("❌ [Bro-Pixel Auth]: Key not found! Set getgenv().PixelKey = 'YOUR_KEY' before execution.")
     return
 end
 
-local function authenticate()
-    local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
-    if not httpRequest then
-        return false, "Your executor does not support HTTP requests!"
-    end
-
-    local payload = HttpService:JSONEncode({
-        key = userProvidedKey,
-        hwid = userHWID
-    })
-
-    local response = nil
-    local success = false
+local function checkKey(userKey)
+    local rawHwid = gethwid and gethwid() or (game:GetService("RbxAnalyticsService"):GetClientId())
+    local requestUrl = string.format("%s?key=%s&hwid=%s", API_URL, tostring(userKey), tostring(rawHwid))
     
-    -- Попытка подключения (до 3 раз на случай секундных задержек)
-    for attempt = 1, 3 do
-        success = pcall(function()
-            response = httpRequest({
-                Url = RENDER_API_URL,
-                Method = "POST",
-                Headers = {
-                    ["Content-Type"] = "application/json"
-                },
-                Body = payload
-            })
-        end)
-
-        if success and response and response.StatusCode == 200 then
-            break
-        end
-
-        if attempt < 3 then task_wait(1) end
-    end
-
-    if not success or not response then
-        return false, "Error connecting to authorization server (Render API)!"
-    end
-
-    if response.StatusCode ~= 200 then
-        return false, "Server error status: " .. tostring(response.StatusCode)
-    end
-
-    local ok, resultData = pcall(function()
-        return HttpService:JSONDecode(response.Body)
+    local success, response = pcall(function()
+        return game:HttpGet(requestUrl)
     end)
-
-    if not ok or type(resultData) ~= "table" then
-        return false, "Error reading response from server!"
-    end
-
-    if resultData.success then
-        return true, resultData.message or "Success!"
+    
+    if success and response then
+        local ok, data = pcall(function()
+            return HttpService:JSONDecode(response)
+        end)
+        
+        if ok and type(data) == "table" then
+            if data.status == "success" then
+                return true, data.message or "Access Granted!"
+            else
+                return false, data.message or "Access Denied!"
+            end
+        else
+            return false, "Invalid response structure from server!"
+        end
     else
-        return false, resultData.message or "Authentication failed!"
+        return false, "Failed to connect to the authentication server!"
     end
 end
 
-local isAuthenticated, authMessage = authenticate()
+local isAuthenticated, authMessage = checkKey(userProvidedKey)
 
 if not isAuthenticated then
-    Players.LocalPlayer:Kick("🔒 [Bro-Pixel Auth]: " .. authMessage)
-    error("[AUTH FAILED]: " .. authMessage)
+    Players.LocalPlayer:Kick("🔒 [Bro-Pixel Auth]: " .. tostring(authMessage))
+    error("[AUTH FAILED]: " .. tostring(authMessage))
     return
 end
 
-print("✅ Authorization successful! Loading Bro-PixelScript...")
+print("✅ Authorization successful: " .. tostring(authMessage))
 
 -- === MAIN SCRIPT ===
 
@@ -218,8 +185,6 @@ local wasMyTurn = false
 local isTyping = false 
 local typingSessionId = 0
 
-local cached_updateInfoFrame = nil
-
 local checkWordDelay = 1.0 
 local startTime = os_time()
 local totalTurns = 0
@@ -288,77 +253,105 @@ if Network then
     end
 end
 
+-- === DYNAMIC GC FUNCTION SEARCH (FAST & SAFE) ===
+local activeUpdateFn = nil
+
+local function isValidStructure(fn)
+    if type(fn) ~= "function" then return false end
+    
+    local isTargetName = false
+    pcall(function()
+        if debug_getinfo(fn).name == "updateInfoFrame" then
+            isTargetName = true
+        end
+    end)
+    if not isTargetName then return false end
+    
+    local hasPrompt = false
+    local hasPlayerID = false
+    
+    pcall(function()
+        for _, vv in pairs(debug_getupvalues(fn)) do
+            if type(vv) == "table" then
+                if vv.Prompt ~= nil then hasPrompt = true end
+                if vv.PlayerID ~= nil then hasPlayerID = true end
+            end
+        end
+    end)
+    
+    return hasPrompt and hasPlayerID
+end
+
+local function getActiveUpdateInfoFrame()
+    if activeUpdateFn and isValidStructure(activeUpdateFn) then
+        return activeUpdateFn
+    end
+
+    activeUpdateFn = nil
+    for _, v in pairs(getgc()) do
+        if isValidStructure(v) then
+            activeUpdateFn = v
+            return v
+        end
+    end
+    
+    return nil
+end
+
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
+    activeUpdateFn = nil
     typingSessionId = typingSessionId + 1 
     sessionUsedWords = {} 
     lastHandledPrompt = ""
     wasMyTurn = false
     isTyping = false
-    cached_updateInfoFrame = nil
     
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
 end
 
--- === TURN & PROMPT GETTER LOGIC ===
-
-local function GetTurn()
-    local s, r = pcall(function()
-        if cached_updateInfoFrame then
-            for _, vv in ipairs(debug_getupvalues(cached_updateInfoFrame)) do
-                if type(vv) == "table" and vv.PlayerID ~= nil then 
-                    return vv.PlayerID 
-                end
-            end
-        end
-
-        for _, v in pairs(getgc()) do
-            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                cached_updateInfoFrame = v
-                for __, vv in ipairs(debug_getupvalues(v)) do
-                    if type(vv) == "table" and vv.PlayerID ~= nil then 
-                        return vv.PlayerID 
-                    end
-                end
-            end
-        end
-    end)
-    if s and r then return r end
-    return nil
-end
+-- === CORE DATA GETTERS ===
 
 local function GetLetters()
-    local s, r = pcall(function()
-        if cached_updateInfoFrame then
-            for _, vv in pairs(debug_getupvalues(cached_updateInfoFrame)) do
+    local fn = getActiveUpdateInfoFrame()
+    if fn then
+        local s, r = pcall(function()
+            for _, vv in pairs(debug_getupvalues(fn)) do
                 if type(vv) == "table" and vv.Prompt ~= nil then 
                     return vv.Prompt 
                 end
             end
-        end
-
-        for _, v in pairs(getgc()) do
-            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                cached_updateInfoFrame = v
-                for __, vv in pairs(debug_getupvalues(v)) do
-                    if type(vv) == "table" and vv.Prompt ~= nil then 
-                        return vv.Prompt 
-                    end
-                end
-            end
-        end
-    end)
-    if s and r then return r end
+        end)
+        if s and type(r) == "string" and r ~= "" then return r end
+    end
 
     local localPlayer = Players.LocalPlayer
     local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
         local promptLbl = playerGui:FindFirstChild("PromptLabel", true)
-        if promptLbl then return promptLbl.Text end
+        if promptLbl and promptLbl.Text ~= "" then
+            return promptLbl.Text
+        end
     end
-    return ""
+
+    return nil
+end
+
+local function GetTurn()
+    local fn = getActiveUpdateInfoFrame()
+    if fn then
+        local s, r = pcall(function()
+            for _, vv in pairs(debug_getupvalues(fn)) do
+                if type(vv) == "table" and vv.PlayerID ~= nil then 
+                    return vv.PlayerID 
+                end
+            end
+        end)
+        if s and r ~= nil then return r end
+    end
+    return nil
 end
 
 local function getGameStatus()
@@ -366,7 +359,7 @@ local function getGameStatus()
     if not rawPrompt or type(rawPrompt) ~= "string" then return nil, false end
 
     local prompt = rawPrompt:lower():gsub("%s+", "")
-    if prompt == "" or prompt == "waiting" then return nil, false end
+    if prompt == "" or prompt == "waiting" or prompt == "waiting..." then return nil, false end
 
     local localPlayer = Players.LocalPlayer
     if not localPlayer then return nil, false end
@@ -443,7 +436,6 @@ local function typeWordMobile(word, targetPrompt)
         
         local char = string_sub(word, i, i)
 
-        -- Имитация опечатки
         if typosEnabled and not instanttype and math_random(1, 100) <= typoChancePercent then
             local wrongCharIndex = math_random(1, #alphabet)
             local wrongChar = string_sub(alphabet, wrongCharIndex, wrongCharIndex)
@@ -525,7 +517,6 @@ end
 
 -- === WORD SEARCH LOGIC WITH PRIORITY ===
 local function copyword(bruteforce)
-    if isTyping then return end
     local contains, isMyTurn = getGameStatus()
     
     if not contains or contains == "" then 
@@ -537,6 +528,12 @@ local function copyword(bruteforce)
         lastHandledPrompt = ""
         return
     end
+
+    if isTyping and contains ~= lastHandledPrompt then
+        isTyping = false
+    end
+
+    if isTyping then return end
 
     wasMyTurn = true
 
@@ -610,7 +607,7 @@ local function copyword(bruteforce)
             sessionUsedWords[finalword] = true
             if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
             
-            if autotype and isMyTurn and not isTyping then
+            if autotype and isMyTurn then
                 task_spawn(function()
                     typeWordMobile(finalword, promptLower)
                 end)
