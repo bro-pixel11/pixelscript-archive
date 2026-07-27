@@ -30,9 +30,10 @@ local Players = game:GetService("Players")
 local Vim = game:GetService("VirtualInputManager")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local userHWID = RbxAnalytics:GetClientId()
-local KEYS_URL = "https://raw.githubusercontent.com/bro-pixel11/keys.json/main/auth.json"
+-- === RENDER API AUTHENTICATION SYSTEM ===
+local RENDER_API_URL = "https://roblox-key-api-zxnv.onrender.com" -- 👈 ВСТАВЬ СЮДА ССЫЛКУ НА СВОЙ RENDER
 
+local userHWID = RbxAnalytics:GetClientId()
 local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
 
 if not userProvidedKey or userProvidedKey == "" then
@@ -41,46 +42,60 @@ if not userProvidedKey or userProvidedKey == "" then
 end
 
 local function authenticate()
-    local success, response = pcall(function()
-        return game:HttpGet(KEYS_URL)
-    end)
+    local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+    if not httpRequest then
+        return false, "Your executor does not support HTTP requests!"
+    end
+
+    local payload = HttpService:JSONEncode({
+        key = userProvidedKey,
+        hwid = userHWID
+    })
+
+    local response = nil
+    local success = false
+    
+    -- Попытка подключения (до 3 раз на случай секундных задержек)
+    for attempt = 1, 3 do
+        success = pcall(function()
+            response = httpRequest({
+                Url = RENDER_API_URL,
+                Method = "POST",
+                Headers = {
+                    ["Content-Type"] = "application/json"
+                },
+                Body = payload
+            })
+        end)
+
+        if success and response and response.StatusCode == 200 then
+            break
+        end
+
+        if attempt < 3 then task_wait(1) end
+    end
 
     if not success or not response then
-        return false, "Error connecting to authorization server!"
+        return false, "Error connecting to authorization server (Render API)!"
     end
 
-    local ok, keysData = pcall(function()
-        return HttpService:JSONDecode(response)
+    if response.StatusCode ~= 200 then
+        return false, "Server error status: " .. tostring(response.StatusCode)
+    end
+
+    local ok, resultData = pcall(function()
+        return HttpService:JSONDecode(response.Body)
     end)
 
-    if not ok or type(keysData) ~= "table" then
-        return false, "Error reading key database!"
+    if not ok or type(resultData) ~= "table" then
+        return false, "Error reading response from server!"
     end
 
-    local registeredHWID = keysData[userProvidedKey]
-
-    if not registeredHWID then
-        return false, "Invalid access key!"
+    if resultData.success then
+        return true, resultData.message or "Success!"
+    else
+        return false, resultData.message or "Authentication failed!"
     end
-
-    if type(registeredHWID) == "table" then
-        for _, allowedHWID in ipairs(registeredHWID) do
-            if allowedHWID == userHWID then
-                return true, "Success!"
-            end
-        end
-        return false, "Your HWID was not found in the allowed list!\nYour HWID: " .. tostring(userHWID)
-    end
-
-    if registeredHWID == userHWID then
-        return true, "Success!"
-    end
-
-    if registeredHWID == "UNASSIGNED" then
-        return false, "Key is not activated. Your HWID:\n" .. tostring(userHWID)
-    end
-
-    return false, "Key is tied to another HWID!\nYour current HWID: " .. tostring(userHWID)
 end
 
 local isAuthenticated, authMessage = authenticate()
