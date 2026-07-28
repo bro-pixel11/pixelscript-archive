@@ -780,7 +780,7 @@ SettingsTab:CreateSlider({
    end,
 })
 
-SettingsTab:Toggle({
+SettingsTab:CreateToggle({
    Name = "Human Jittering",
    CurrentValue = false,
    Info = "Slight realistic delay fluctuations",
