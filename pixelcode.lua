@@ -307,7 +307,6 @@ local function resetRoundState()
     wasMyTurn = false
     isTyping = false
     
-    -- Очистка накопившегося мусора Lua
     pcall(function()
         collectgarbage("collect")
     end)
@@ -334,7 +333,6 @@ local function GetLetters()
         end
     end
 
-    -- Резервный фоллбэк: читаем напрямую из PlayerGui, если GC подвис
     local localPlayer = Players.LocalPlayer
     local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
@@ -526,7 +524,7 @@ local function typeWordMobile(word, targetPrompt)
     end
 end
 
--- === WORD SEARCH LOGIC WITH PRIORITY (FIXED FALLBACKS) ===
+-- === WORD SEARCH LOGIC WITH PRIORITY ===
 local function copyword(bruteforce)
     local contains, isMyTurn = getGameStatus()
     
@@ -595,7 +593,6 @@ local function copyword(bruteforce)
                     end
                     finalword = shortest
                 else
-                    -- Safe Fallback: берем любое самое короткое из доступных
                     local shortest = validCandidates[1]
                     for i = 2, #validCandidates do
                         if #validCandidates[i] < #shortest then
@@ -667,8 +664,8 @@ MainTab:CreateToggle({
                   local currentPrompt = GetLetters()
                   if currentPrompt == nil or currentPrompt:lower():find("waiting") then
                       waitingCounter = waitingCounter + 1
-                      -- Сброс застрявшего GC-кэша ТОЛЬКО при простое свыше ~15 секунд (100 циклов по 0.15s)
-                      if waitingCounter >= 100 then
+                      -- ШАГ 1: Сократили время ожидания с 100 итераций (~15с) до 10 (~1.5с)
+                      if waitingCounter >= 10 then
                           activeUpdateFn = nil 
                           waitingCounter = 0
                       end
@@ -829,6 +826,11 @@ if Games then
     if registerGame then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
             resetRoundState()
+            
+            -- ШАГ 2: Страховочный сброс кеша через 1 секунду после события перезапуска
+            task.delay(1, function()
+                activeUpdateFn = nil
+            end)
 
             if autojoin then 
                 task_spawn(function()
