@@ -515,7 +515,7 @@ local function typeWordMobile(word, targetPrompt)
     end
 end
 
--- === WORD SEARCH LOGIC WITH PRIORITY ===
+-- === WORD SEARCH LOGIC WITH PRIORITY (FIXED FALLBACKS) ===
 local function copyword(bruteforce)
     local contains, isMyTurn = getGameStatus()
     
@@ -567,7 +567,12 @@ local function copyword(bruteforce)
         local finalword = nil
 
         if #validCandidates > 0 then
-            if wordPriorityMode == "Hyphenated / Short" then
+            local currentMode = wordPriorityMode
+            if type(currentMode) == "table" then
+                currentMode = currentMode[1]
+            end
+
+            if currentMode == "Hyphenated / Short" or currentMode == "Hyphenated/short" then
                 if #specialMatches > 0 then
                     finalword = specialMatches[math_random(1, #specialMatches)]
                 elseif #normalMatches > 0 then
@@ -578,9 +583,18 @@ local function copyword(bruteforce)
                         end
                     end
                     finalword = shortest
+                else
+                    -- Safe Fallback: берем любое самое короткое из доступных
+                    local shortest = validCandidates[1]
+                    for i = 2, #validCandidates do
+                        if #validCandidates[i] < #shortest then
+                            shortest = validCandidates[i]
+                        end
+                    end
+                    finalword = shortest
                 end
 
-            elseif wordPriorityMode == "Shortest" then
+            elseif currentMode == "Shortest" then
                 local shortest = validCandidates[1]
                 for i = 2, #validCandidates do
                     if #validCandidates[i] < #shortest then
@@ -589,7 +603,7 @@ local function copyword(bruteforce)
                 end
                 finalword = shortest
 
-            elseif wordPriorityMode == "Longest" then
+            elseif currentMode == "Longest" then
                 local longest = validCandidates[1]
                 for i = 2, #validCandidates do
                     if #validCandidates[i] > #longest then
@@ -598,7 +612,10 @@ local function copyword(bruteforce)
                 end
                 finalword = longest
 
-            elseif wordPriorityMode == "Random" then
+            elseif currentMode == "Random" then
+                finalword = validCandidates[math_random(1, #validCandidates)]
+            else
+                -- Fallback на случай несоответствия строки
                 finalword = validCandidates[math_random(1, #validCandidates)]
             end
         end
