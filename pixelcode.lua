@@ -73,7 +73,7 @@ if not isAuthenticated then
     return
 end
 
-print("✅ Authorization successful: " .. tostring(authMessage))
+print("✅ [Bro-Pixel Auth]: Authorization successful: " .. tostring(authMessage))
 
 -- === MAIN SCRIPT ===
 
@@ -120,6 +120,7 @@ local function loadDictionaryAsync(url)
         local success, raw = pcall(function() return game:HttpGet(url) end)
         if not success or not raw then 
             statusLabel:Set("Failed to load dictionary!")
+            print("❌ [DEBUG]: Failed to download dictionary!")
             return 
         end
         
@@ -157,6 +158,7 @@ local function loadDictionaryAsync(url)
             end
         end
         statusLabel:Set("Dictionary: " .. total .. " words (Indexed & Ready)")
+        print("✅ [DEBUG]: Dictionary indexed with " .. total .. " words.")
     end)
 end
 
@@ -291,6 +293,7 @@ local function getActiveUpdateInfoFrame()
     for _, v in pairs(getgc()) do
         if isValidStructure(v) then
             activeUpdateFn = v
+            print("🔍 [DEBUG - GC]: Found new active updateInfoFrame function!")
             return v
         end
     end
@@ -300,6 +303,7 @@ end
 
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
+    print("🔄 [DEBUG - Game Reset]: Resetting Round State...")
     activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
     sessionUsedWords = {} 
@@ -413,18 +417,22 @@ local function typeWordMobile(word, targetPrompt)
     typingSessionId = typingSessionId + 1
     local currentSession = typingSessionId
 
+    print("⌨️ [DEBUG - Type]: Starting typing process for word: " .. tostring(word))
+
     if not instanttype and checkWordDelay > 0 then 
         local finalDelay = applyRngVariation(checkWordDelay)
         task_wait(finalDelay) 
     end
     
     if currentSession ~= typingSessionId then
+        print("⚠️ [DEBUG - Type]: Session changed mid-delay, canceling type.")
         isTyping = false
         return
     end
 
     local currentPrompt, isMyTurn = getGameStatus()
     if currentPrompt ~= targetPrompt or not isMyTurn then
+        print("⚠️ [DEBUG - Type]: Status changed before typing! Prompt: " .. tostring(currentPrompt) .. " | IsMyTurn: " .. tostring(isMyTurn))
         isTyping = false
         return
     end
@@ -441,7 +449,10 @@ local function typeWordMobile(word, targetPrompt)
         if currentSession ~= typingSessionId then break end
         
         local checkPrompt, checkTurn = getGameStatus()
-        if checkPrompt ~= targetPrompt or not checkTurn then break end
+        if checkPrompt ~= targetPrompt or not checkTurn then 
+            print("⚠️ [DEBUG - Type]: Turn lost during typing string.")
+            break 
+        end
         
         local char = string_sub(word, i, i)
 
@@ -512,7 +523,7 @@ local function typeWordMobile(word, targetPrompt)
             if not instanttype then task_wait(0.03) end
             totalTurns = totalTurns + 1
             if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
-            
+            print("✅ [DEBUG - Type]: Word successfully submitted: " .. tostring(word))
             lastHandledPrompt = ""
         else
             if textBox then textBox.Text = "" end
@@ -522,6 +533,29 @@ local function typeWordMobile(word, targetPrompt)
     if currentSession == typingSessionId then
         isTyping = false 
     end
+end
+
+-- === RARE WORD SCORING SYSTEM ===
+local letterWeights = {
+    q=8, x=8, z=8, j=8,
+    k=4, v=4, w=4, y=3, f=3, p=3, b=3, g=3, m=3, c=3, d=3,
+    e=1, t=1, a=1, o=1, i=1, n=1, s=1, r=1, h=2, l=1, u=2
+}
+
+local function getRareScore(word)
+    local score = 0
+    local len = #word
+    
+    for i = 1, len do
+        local char = string_sub(word, i, i)
+        score = score + (letterWeights[char] or 1)
+    end
+    
+    if len > 7 then
+        score = score + ((len - 7) * 3)
+    end
+    
+    return score
 end
 
 -- === WORD SEARCH LOGIC WITH PRIORITY ===
@@ -539,6 +573,7 @@ local function copyword(bruteforce)
     end
 
     if isTyping and contains ~= lastHandledPrompt then
+        print("🔄 [DEBUG - Search]: Prompt changed mid-type! Stopping typing session.")
         isTyping = false
     end
 
@@ -548,6 +583,7 @@ local function copyword(bruteforce)
 
     if contains ~= lastHandledPrompt or bruteforce then
         lastHandledPrompt = contains
+        print("🎯 [DEBUG - Search]: New turn detected! Prompt: " .. tostring(contains))
         
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
 
@@ -578,10 +614,24 @@ local function copyword(bruteforce)
         if #validCandidates > 0 then
             local currentMode = wordPriorityMode
             if type(currentMode) == "table" then
-                currentMode = currentMode[1]
+                currentMode = currentOption[1] or currentMode[1]
             end
 
-            if currentMode == "Hyphenated / Short" or currentMode == "Hyphenated/short" then
+            if currentMode == "Rare Words" then
+                local bestWord = validCandidates[1]
+                local maxScore = -1
+                
+                for i = 1, #validCandidates do
+                    local cand = validCandidates[i]
+                    local score = getRareScore(cand)
+                    if score > maxScore then
+                        maxScore = score
+                        bestWord = cand
+                    end
+                end
+                finalword = bestWord
+
+            elseif currentMode == "Hyphenated / Short" or currentMode == "Hyphenated/short" then
                 if #specialMatches > 0 then
                     finalword = specialMatches[math_random(1, #specialMatches)]
                 elseif #normalMatches > 0 then
@@ -630,6 +680,7 @@ local function copyword(bruteforce)
         if finalword then
             sessionUsedWords[finalword] = true
             if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
+            print("💡 [DEBUG - Search]: Picked word: " .. tostring(finalword) .. " (Mode: " .. tostring(wordPriorityMode) .. ")")
             
             if autotype and isMyTurn then
                 task_spawn(function()
@@ -638,6 +689,7 @@ local function copyword(bruteforce)
             end
         else
             if matchLabel then matchLabel:Set("Current Match: Not Found") end
+            print("❌ [DEBUG - Search]: No available words found for prompt: " .. tostring(contains))
             lastHandledPrompt = ""
         end
     end
@@ -656,6 +708,7 @@ MainTab:CreateToggle({
    Callback = function(Value)
       autosearch = Value
       if autosearch then
+          print("▶️ [DEBUG]: Auto Search Enabled")
           task_spawn(function()
               local waitingCounter = 0
               while autosearch do 
@@ -664,8 +717,10 @@ MainTab:CreateToggle({
                   local currentPrompt = GetLetters()
                   if currentPrompt == nil or currentPrompt:lower():find("waiting") then
                       waitingCounter = waitingCounter + 1
-                      -- ШАГ 1: Сократили время ожидания с 100 итераций (~15с) до 10 (~1.5с)
                       if waitingCounter >= 10 then
+                          if activeUpdateFn ~= nil then
+                              print("⏳ [DEBUG - GC]: Stale function handle cleared (waiting timeout).")
+                          end
                           activeUpdateFn = nil 
                           waitingCounter = 0
                       end
@@ -675,6 +730,7 @@ MainTab:CreateToggle({
 
                   pcall(copyword) 
               end
+              print("⏹️ [DEBUG]: Auto Search Loop Ended")
           end)
       end
    end,
@@ -702,6 +758,7 @@ MainTab:CreateToggle({
                 if autoJoinDelay > 0 then task_wait(autoJoinDelay) end
                 resetRoundState()
                 pcall(function()
+                    print("🚪 [DEBUG - AutoJoin]: Attempting to join game...")
                     for i = -1, -20, -1 do 
                         Games.GameEvent:FireServer(i, "JoinGame") 
                     end
@@ -719,7 +776,7 @@ MainTab:CreateButton({
 -- === UI ELEMENTS (DICTIONARY TAB) ===
 DictionaryTab:CreateDropdown({
    Name = "Word Priority",
-   Options = {"Hyphenated / Short", "Shortest", "Longest", "Random"},
+   Options = {"Rare Words", "Hyphenated / Short", "Shortest", "Longest", "Random"},
    CurrentOption = {"Hyphenated / Short"},
    MultipleOptions = false,
    Callback = function(Option)
@@ -825,9 +882,9 @@ if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
+            print("📩 [DEBUG - Network]: RegisterGame Event Fired for RoomID: " .. tostring(gameRoomID))
             resetRoundState()
             
-            -- ШАГ 2: Страховочный сброс кеша через 1 секунду после события перезапуска
             task.delay(1, function()
                 activeUpdateFn = nil
             end)
