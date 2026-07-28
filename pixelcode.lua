@@ -300,13 +300,18 @@ end
 
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
-    activeUpdateFn = nil
+    activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
     sessionUsedWords = {} 
     lastHandledPrompt = ""
     wasMyTurn = false
     isTyping = false
     
+    -- Очистка накопившегося мусора Lua
+    pcall(function()
+        collectgarbage("collect")
+    end)
+
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
@@ -324,15 +329,21 @@ local function GetLetters()
                 end
             end
         end)
-        if s and type(r) == "string" and r ~= "" then return r end
+        if s and type(r) == "string" and r ~= "" and not r:lower():find("waiting") then 
+            return r 
+        end
     end
 
+    -- Резервный фоллбэк: читаем напрямую из PlayerGui, если GC подвис
     local localPlayer = Players.LocalPlayer
     local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
-        local promptLbl = playerGui:FindFirstChild("PromptLabel", true)
-        if promptLbl and promptLbl.Text ~= "" then
-            return promptLbl.Text
+        for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "PlayerGui"}) do
+            local target = playerGui:FindFirstChild(guiName) or playerGui
+            local promptLbl = target:FindFirstChild("PromptLabel", true) or target:FindFirstChild("Prompt", true)
+            if promptLbl and promptLbl:IsA("TextLabel") and promptLbl.Visible and promptLbl.Text ~= "" then
+                return promptLbl.Text
+            end
         end
     end
 
@@ -615,7 +626,6 @@ local function copyword(bruteforce)
             elseif currentMode == "Random" then
                 finalword = validCandidates[math_random(1, #validCandidates)]
             else
-                -- Fallback на случай несоответствия строки
                 finalword = validCandidates[math_random(1, #validCandidates)]
             end
         end
@@ -650,8 +660,22 @@ MainTab:CreateToggle({
       autosearch = Value
       if autosearch then
           task_spawn(function()
+              local waitingCounter = 0
               while autosearch do 
                   task_wait(0.15)
+                  
+                  local currentPrompt = GetLetters()
+                  if currentPrompt == nil or currentPrompt:lower():find("waiting") then
+                      waitingCounter = waitingCounter + 1
+                      -- Сброс застрявшего GC-кэша ТОЛЬКО при простое свыше ~15 секунд (100 циклов по 0.15s)
+                      if waitingCounter >= 100 then
+                          activeUpdateFn = nil 
+                          waitingCounter = 0
+                      end
+                  else
+                      waitingCounter = 0
+                  end
+
                   pcall(copyword) 
               end
           end)
@@ -756,7 +780,7 @@ SettingsTab:CreateSlider({
    end,
 })
 
-SettingsTab:CreateToggle({
+SettingsTab:Toggle({
    Name = "Human Jittering",
    CurrentValue = false,
    Info = "Slight realistic delay fluctuations",
