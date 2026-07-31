@@ -182,6 +182,65 @@ local function isValidDictionaryWord(word)
     return false
 end
 
+-- === DYNAMIC GC FUNCTION SEARCH ===
+local activeUpdateFn = nil
+
+local function isValidStructure(fn)
+    if type(fn) ~= "function" then return false end
+    local isTargetName = false
+    pcall(function()
+        if debug_getinfo(fn).name == "updateInfoFrame" then isTargetName = true end
+    end)
+    if not isTargetName then return false end
+    
+    local hasPrompt, hasPlayerID = false, false
+    pcall(function()
+        for _, vv in pairs(debug_getupvalues(fn)) do
+            if type(vv) == "table" then
+                if vv.Prompt ~= nil then hasPrompt = true end
+                if vv.PlayerID ~= nil then hasPlayerID = true end
+            end
+        end
+    end)
+    return hasPrompt and hasPlayerID
+end
+
+local function getActiveUpdateInfoFrame()
+    if activeUpdateFn and isValidStructure(activeUpdateFn) then return activeUpdateFn end
+    activeUpdateFn = nil
+    for _, v in pairs(getgc()) do
+        if isValidStructure(v) then
+            activeUpdateFn = v
+            print("🔍 [DEBUG - GC]: Found new active updateInfoFrame function!")
+            return v
+        end
+    end
+    return nil
+end
+
+local function GetTurn()
+    local fn = getActiveUpdateInfoFrame()
+    if fn then
+        local s, r = pcall(function()
+            for _, vv in pairs(debug_getupvalues(fn)) do
+                if type(vv) == "table" and vv.PlayerID ~= nil then return vv.PlayerID end
+            end
+        end)
+        if s and r ~= nil then return r end
+    end
+    return nil
+end
+
+-- === HELPER TO GET PLAYER NAME BY ID OR TURN ===
+local function getCurrentSpeakerPlayer()
+    local turnId = GetTurn()
+    if turnId then
+        local p = Players:GetPlayerByUserId(turnId)
+        if p then return p end
+    end
+    return nil
+end
+
 -- === STATE & SETTINGS ===
 local sessionUsedWords = {}
 local stolenWords = {} -- [word] = { owner = "PlayerName" }
@@ -241,6 +300,7 @@ if Network then
     if gameEvent then
         local currentTypingBuffer = ""
         local currentSpeakerName = ""
+        local currentSpeakerPlayer = nil
         local systemStrings = {
             ["typingevent"] = true,
             ["changepossessor"] = true,
@@ -267,28 +327,46 @@ if Network then
                             currentTypingBuffer = lowerArg
                         end
                     elseif typeof and typeof(arg) == "Instance" and arg:IsA("Player") then
+                        currentSpeakerPlayer = arg
                         currentSpeakerName = arg.Name
                     elseif type(arg) == "table" and arg.Name then
                         currentSpeakerName = tostring(arg.Name)
                     end
                 end
+
+                -- Если из эвента игрок не вытащился, берем из GC/Game state
+                if not currentSpeakerPlayer then
+                    currentSpeakerPlayer = getCurrentSpeakerPlayer()
+                    if currentSpeakerPlayer then
+                        currentSpeakerName = currentSpeakerPlayer.Name
+                    end
+                end
+
             else
                 for i = 1, #args do
                     if type(args[i]) == "string" and args[i]:lower() == "changepossessor" then
                         local localPlayer = Players.LocalPlayer
                         
+                        -- СТРОГАЯ ПРОВЕРКА НА СЕБЯ
                         local isMe = false
                         if localPlayer then
-                            if currentSpeakerName == localPlayer.Name or currentSpeakerName == localPlayer.DisplayName then
+                            local turnId = GetTurn()
+                            if turnId and turnId == localPlayer.UserId then
+                                isMe = true
+                            elseif currentSpeakerPlayer and currentSpeakerPlayer == localPlayer then
+                                isMe = true
+                            elseif currentSpeakerName ~= "" and (currentSpeakerName == localPlayer.Name or currentSpeakerName == localPlayer.DisplayName) then
                                 isMe = true
                             end
                         end
-                        
+
                         if #currentTypingBuffer > 1 then
                             sessionUsedWords[currentTypingBuffer] = true
                             
+                            -- СТИЛИМ ТОЛЬКО ЕСЛИ ЭТО ТОЧНО ЧУЖОЕ СЛОВО
                             if stealWordsEnabled and not isMe and isValidDictionaryWord(currentTypingBuffer) then
-                                local finalOwner = (currentSpeakerName ~= "" and currentSpeakerName) or "Enemy Player"
+                                local ownerPlayer = currentSpeakerPlayer or getCurrentSpeakerPlayer()
+                                local finalOwner = ownerPlayer and ownerPlayer.Name or (currentSpeakerName ~= "" and currentSpeakerName or "Opponent")
                                 
                                 if not stolenWords[currentTypingBuffer] then
                                     stolenWords[currentTypingBuffer] = { owner = finalOwner }
@@ -307,6 +385,7 @@ if Network then
                             
                             currentTypingBuffer = ""
                             currentSpeakerName = ""
+                            currentSpeakerPlayer = nil
                         end
                         break
                     end
@@ -314,42 +393,6 @@ if Network then
             end
         end)
     end
-end
-
--- === DYNAMIC GC FUNCTION SEARCH ===
-local activeUpdateFn = nil
-
-local function isValidStructure(fn)
-    if type(fn) ~= "function" then return false end
-    local isTargetName = false
-    pcall(function()
-        if debug_getinfo(fn).name == "updateInfoFrame" then isTargetName = true end
-    end)
-    if not isTargetName then return false end
-    
-    local hasPrompt, hasPlayerID = false, false
-    pcall(function()
-        for _, vv in pairs(debug_getupvalues(fn)) do
-            if type(vv) == "table" then
-                if vv.Prompt ~= nil then hasPrompt = true end
-                if vv.PlayerID ~= nil then hasPlayerID = true end
-            end
-        end
-    end)
-    return hasPrompt and hasPlayerID
-end
-
-local function getActiveUpdateInfoFrame()
-    if activeUpdateFn and isValidStructure(activeUpdateFn) then return activeUpdateFn end
-    activeUpdateFn = nil
-    for _, v in pairs(getgc()) do
-        if isValidStructure(v) then
-            activeUpdateFn = v
-            print("🔍 [DEBUG - GC]: Found new active updateInfoFrame function!")
-            return v
-        end
-    end
-    return nil
 end
 
 local function getInfoTable()
@@ -438,19 +481,6 @@ local function GetLetters()
                 return promptLbl.Text
             end
         end
-    end
-    return nil
-end
-
-local function GetTurn()
-    local fn = getActiveUpdateInfoFrame()
-    if fn then
-        local s, r = pcall(function()
-            for _, vv in pairs(debug_getupvalues(fn)) do
-                if type(vv) == "table" and vv.PlayerID ~= nil then return vv.PlayerID end
-            end
-        end)
-        if s and r ~= nil then return r end
     end
     return nil
 end
