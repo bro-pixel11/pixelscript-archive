@@ -286,26 +286,7 @@ local function applyRngVariation(baseValue)
     return result < 0 and 0 or result
 end
 
--- === FALLBACK UI WORD SCRAPER FOR STEALING ===
-local function getUIEnemyTypingText()
-    local localPlayer = Players.LocalPlayer
-    local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return nil end
-
-    local target = playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI")
-    if target then
-        local wordBox = target:FindFirstChild("Word", true) or target:FindFirstChild("PlayerWord", true) or target:FindFirstChild("TypedText", true)
-        if wordBox and wordBox:IsA("TextLabel") and wordBox.Visible and #wordBox.Text >= 2 then
-            local clean = wordBox.Text:lower():gsub("%s+", "")
-            if clean ~= "" and not clean:find("waiting") and not clean:find("%d") then
-                return clean
-            end
-        end
-    end
-    return nil
-end
-
--- === OPTIMIZED NETWORK EVENTS INITIALIZATION & WORD STEALING ===
+-- === LEAN & FAST STEAL SYSTEM (WITHOUT HEAVY UI SEARCH) ===
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
@@ -321,7 +302,6 @@ if Network then
             
             local eventName = type(args[1]) == "string" and args[1]:lower() or ""
 
-            -- 1. Быстрое накапливание букв (БЕЗ тяжелых проверок внутри события)
             if eventName == "typingevent" then
                 local arg2 = args[2]
                 if type(arg2) == "string" then
@@ -333,25 +313,18 @@ if Network then
                     end
                 end
 
-            -- 2. Смена хода — обработка накопленного слова
             elseif eventName == "changepossessor" then
-                local localPlayer = Players.LocalPlayer
-                local turnId = GetTurn()
-                local isMe = (localPlayer and turnId and turnId == localPlayer.UserId)
-
-                -- Fallback через UI, если сетевой буфер пуст
-                if #currentTypingBuffer < 2 then
-                    local uiText = getUIEnemyTypingText()
-                    if uiText then currentTypingBuffer = uiText end
-                end
-
                 if #currentTypingBuffer > 1 then
                     sessionUsedWords[currentTypingBuffer] = true
                     
+                    local localPlayer = Players.LocalPlayer
+                    local turnId = GetTurn()
+                    local isMe = (localPlayer and turnId and turnId == localPlayer.UserId)
+
                     if stealWordsEnabled and not isMe and isValidDictionaryWord(currentTypingBuffer) then
                         local ownerPlayer = getCurrentSpeakerPlayer()
                         local finalOwner = ownerPlayer and ownerPlayer.Name or "Opponent"
-                        
+
                         if not stolenWords[currentTypingBuffer] then
                             stolenWords[currentTypingBuffer] = { owner = finalOwner }
                             print("🥷 [STEAL]: Stolen '" .. currentTypingBuffer .. "' from " .. finalOwner)
@@ -360,8 +333,8 @@ if Network then
                             if lastStolenFromLabel then lastStolenFromLabel:Set("Stolen From: " .. finalOwner) end
                         end
                     end
-                    currentTypingBuffer = ""
                 end
+                currentTypingBuffer = ""
             end
         end)
     end
@@ -795,19 +768,8 @@ MainTab:CreateToggle({
       autosearch = Value
       if autosearch then
           task_spawn(function()
-              local waitingCounter = 0
               while autosearch do 
-                  task_wait(0.25)
-                  local currentPrompt = GetLetters()
-                  if currentPrompt == nil or currentPrompt:lower():find("waiting") then
-                      waitingCounter = waitingCounter + 1
-                      if waitingCounter >= 6 then
-                          activeUpdateFn = nil 
-                          waitingCounter = 0
-                      end
-                  else
-                      waitingCounter = 0
-                  end
+                  task_wait(0.2)
                   pcall(copyword) 
               end
           end)
