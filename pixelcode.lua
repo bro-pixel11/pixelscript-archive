@@ -21,7 +21,8 @@ local tonumber = tonumber
 local ipairs = ipairs
 local pairs = pairs
 local getgc = getgc
-local rawget = rawget
+local debug_getinfo = debug.getinfo
+local debug_getupvalues = debug.getupvalues
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -262,26 +263,80 @@ if Network then
     end
 end
 
--- === DIRECT STATE TABLE SEARCH (NO FUNCTION CACHING) ===
-local function getGameStateTable()
-    for _, obj in ipairs(getgc(true)) do
-        if type(obj) == "table" then
-            local pcallOk, result = pcall(function()
-                return rawget(obj, "Prompt") ~= nil 
-                   and rawget(obj, "PlayerID") ~= nil 
-                   and rawget(obj, "FuseStart") ~= nil 
-                   and rawget(obj, "FuseRate") ~= nil
-            end)
-            if pcallOk and result then
-                return obj
+-- === DYNAMIC GC FUNCTION SEARCH (FAST, SAFE & SELF-RESETTING) ===
+local activeUpdateFn = nil
+
+local function isValidStructure(fn)
+    if type(fn) ~= "function" then return false end
+    
+    local isTargetName = false
+    pcall(function()
+        if debug_getinfo(fn).name == "updateInfoFrame" then
+            isTargetName = true
+        end
+    end)
+    if not isTargetName then return false end
+    
+    local hasPrompt = false
+    local hasPlayerID = false
+    
+    pcall(function()
+        for _, vv in pairs(debug_getupvalues(fn)) do
+            if type(vv) == "table" then
+                if vv.Prompt ~= nil then hasPrompt = true end
+                if vv.PlayerID ~= nil then hasPlayerID = true end
             end
         end
+    end)
+    
+    return hasPrompt and hasPlayerID
+end
+
+local function isFnAlive(fn)
+    if not fn or not isValidStructure(fn) then return false end
+    local alive = false
+    pcall(function()
+        for _, vv in pairs(debug_getupvalues(fn)) do
+            if type(vv) == "table" and vv.Prompt ~= nil then
+                if type(vv.Prompt) == "string" then
+                    alive = true
+                end
+            end
+        end
+    end)
+    return alive
+end
+
+local function getActiveUpdateInfoFrame()
+    if activeUpdateFn and isFnAlive(activeUpdateFn) then
+        return activeUpdateFn
     end
+
+    activeUpdateFn = nil
+    for _, v in pairs(getgc()) do
+        if isValidStructure(v) and isFnAlive(v) then
+            activeUpdateFn = v
+            print("🔍 [DEBUG - GC]: Found new active updateInfoFrame function!")
+            return v
+        end
+    end
+    
     return nil
 end
 
 local function getInfoTable()
-    return getGameStateTable()
+    local fn = getActiveUpdateInfoFrame()
+    if fn then
+        local s, r = pcall(function()
+            for _, vv in pairs(debug_getupvalues(fn)) do
+                if type(vv) == "table" and vv.FuseStart ~= nil then 
+                    return vv 
+                end
+            end
+        end)
+        if s and type(r) == "table" then return r end
+    end
+    return nil
 end
 
 -- === FUSE DELAY LOGIC ===
@@ -327,8 +382,9 @@ end
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
     print("🔄 [DEBUG - Game Reset]: Resetting Round State...")
+    activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
-    table_clear(sessionUsedWords)
+    sessionUsedWords = {} 
     lastHandledPrompt = ""
     lastFuseStart = 0
     wasMyTurn = false
@@ -348,9 +404,18 @@ end
 -- === CORE DATA GETTERS ===
 
 local function GetLetters()
-    local tbl = getGameStateTable()
-    if tbl and type(tbl.Prompt) == "string" and tbl.Prompt ~= "" and not tbl.Prompt:lower():find("waiting") then
-        return tbl.Prompt
+    local fn = getActiveUpdateInfoFrame()
+    if fn then
+        local s, r = pcall(function()
+            for _, vv in pairs(debug_getupvalues(fn)) do
+                if type(vv) == "table" and vv.Prompt ~= nil then 
+                    return vv.Prompt 
+                end
+            end
+        end)
+        if s and type(r) == "string" and r ~= "" and not r:lower():find("waiting") then 
+            return r 
+        end
     end
 
     local localPlayer = Players.LocalPlayer
@@ -369,9 +434,16 @@ local function GetLetters()
 end
 
 local function GetTurn()
-    local tbl = getGameStateTable()
-    if tbl and tbl.PlayerID ~= nil then
-        return tbl.PlayerID
+    local fn = getActiveUpdateInfoFrame()
+    if fn then
+        local s, r = pcall(function()
+            for _, vv in pairs(debug_getupvalues(fn)) do
+                if type(vv) == "table" and vv.PlayerID ~= nil then 
+                    return vv.PlayerID 
+                end
+            end
+        end)
+        if s and r ~= nil then return r end
     end
     return nil
 end
@@ -444,7 +516,7 @@ local function typeWordMobile(word, targetPrompt)
         return
     end
 
-    -- 🛡️ ПРОВЕРКА НА ЧАТ: Если игрок сам что-то пишет в чате — сбрасываем ввод скрипта!
+    -- 🛡️ ПРОВЕРКА НА ЧАТ
     if UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= getGameTextBox() then
         print("💬 [DEBUG - Chat Protect]: Player is using Chat! Aborting auto-type.")
         isTyping = false
@@ -476,7 +548,6 @@ local function typeWordMobile(word, targetPrompt)
             break 
         end
         
-        -- Проверка фокуса чата во время печати
         if UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= textBox then
             print("💬 [DEBUG - Chat Protect]: Player focused chat during typing! Stopping.")
             interrupted = true
@@ -617,7 +688,6 @@ local function copyword(bruteforce)
         return
     end
 
-    -- Сбрасываем замок отправки при смене промпта или сбросе таймера (FuseStart)
     if contains ~= lastHandledPrompt or (lastFuseStart > 0 and currentFuseStart ~= lastFuseStart) then
         isSubmitting = false
     end
@@ -628,7 +698,6 @@ local function copyword(bruteforce)
         isSubmitting = false
     end
 
-    -- Не ищем слово, если печатаем, ждем ответа ИЛИ если игрок сейчас пишет в ЧАТЕ
     if isTyping or isSubmitting or (UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= getGameTextBox()) then 
         return 
     end
@@ -765,8 +834,24 @@ MainTab:CreateToggle({
       if autosearch then
           print("▶️ [DEBUG]: Auto Search Enabled")
           task_spawn(function()
+              local waitingCounter = 0
               while autosearch do 
                   task_wait(0.15)
+                  
+                  local currentPrompt = GetLetters()
+                  if currentPrompt == nil or currentPrompt:lower():find("waiting") then
+                      waitingCounter = waitingCounter + 1
+                      if waitingCounter >= 6 then
+                          if activeUpdateFn ~= nil then
+                              print("⏳ [DEBUG - GC]: Force clearing cached updateInfoFrame due to timeout.")
+                          end
+                          activeUpdateFn = nil 
+                          waitingCounter = 0
+                      end
+                  else
+                      waitingCounter = 0
+                  end
+
                   pcall(copyword) 
               end
               print("⏹️ [DEBUG]: Auto Search Loop Ended")
@@ -941,6 +1026,10 @@ if Games then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
             print("📩 [DEBUG - Network]: RegisterGame Event Fired for RoomID: " .. tostring(gameRoomID))
             resetRoundState()
+            
+            task.delay(1, function()
+                activeUpdateFn = nil
+            end)
 
             if autojoin then 
                 task_spawn(function()
