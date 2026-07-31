@@ -167,51 +167,26 @@ end
 
 loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt")
 
--- === VALIDATION HELPER FOR STEAL SYSTEM ===
-local function isValidDictionaryWord(word)
-    if not word or #word < 2 then return false end
-    word = word:lower():gsub("%s+", "")
-    
-    local sub = string_sub(word, 1, 2)
-    local list = PromptIndex[sub]
-    if list then
-        for i = 1, #list do
-            if list[i] == word then return true end
-        end
-    end
-    return false
-end
-
--- === DYNAMIC GC FUNCTION SEARCH ===
-local activeUpdateFn = nil
-
-local function isValidStructure(fn)
-    if type(fn) ~= "function" then return false end
-    local isTargetName = false
-    pcall(function()
-        if debug_getinfo(fn).name == "updateInfoFrame" then isTargetName = true end
-    end)
-    if not isTargetName then return false end
-    
-    local hasPrompt, hasPlayerID = false, false
-    pcall(function()
-        for _, vv in pairs(debug_getupvalues(fn)) do
-            if type(vv) == "table" then
-                if vv.Prompt ~= nil then hasPrompt = true end
-                if vv.PlayerID ~= nil then hasPlayerID = true end
-            end
-        end
-    end)
-    return hasPrompt and hasPlayerID
-end
-
+-- === ORIGINAL GC FUNCTION SEARCH ===
 local function getActiveUpdateInfoFrame()
-    if activeUpdateFn and isValidStructure(activeUpdateFn) then return activeUpdateFn end
-    activeUpdateFn = nil
     for _, v in pairs(getgc()) do
-        if isValidStructure(v) then
-            activeUpdateFn = v
-            return v
+        if type(v) == "function" then
+            local isTargetName = false
+            pcall(function()
+                if debug_getinfo(v).name == "updateInfoFrame" then isTargetName = true end
+            end)
+            if isTargetName then
+                local hasPrompt, hasPlayerID = false, false
+                pcall(function()
+                    for _, vv in pairs(debug_getupvalues(v)) do
+                        if type(vv) == "table" then
+                            if vv.Prompt ~= nil then hasPrompt = true end
+                            if vv.PlayerID ~= nil then hasPlayerID = true end
+                        end
+                    end
+                end)
+                if hasPrompt and hasPlayerID then return v end
+            end
         end
     end
     return nil
@@ -286,7 +261,7 @@ local function applyRngVariation(baseValue)
     return result < 0 and 0 or result
 end
 
--- === LEAN & FAST STEAL SYSTEM (WITHOUT HEAVY UI SEARCH) ===
+-- === ULTRA-LIGHTWEIGHT STEAL SYSTEM (NO SEARCH / NO HEAVY DICTIONARY CHECKS) ===
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
@@ -321,13 +296,12 @@ if Network then
                     local turnId = GetTurn()
                     local isMe = (localPlayer and turnId and turnId == localPlayer.UserId)
 
-                    if stealWordsEnabled and not isMe and isValidDictionaryWord(currentTypingBuffer) then
+                    if stealWordsEnabled and not isMe then
                         local ownerPlayer = getCurrentSpeakerPlayer()
                         local finalOwner = ownerPlayer and ownerPlayer.Name or "Opponent"
 
                         if not stolenWords[currentTypingBuffer] then
                             stolenWords[currentTypingBuffer] = { owner = finalOwner }
-                            print("🥷 [STEAL]: Stolen '" .. currentTypingBuffer .. "' from " .. finalOwner)
                             
                             if lastStolenLabel then lastStolenLabel:Set("Stolen Word: " .. currentTypingBuffer:upper()) end
                             if lastStolenFromLabel then lastStolenFromLabel:Set("Stolen From: " .. finalOwner) end
@@ -386,7 +360,6 @@ end
 
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
-    activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
     sessionUsedWords = {} 
     lastHandledPrompt = ""
@@ -607,7 +580,7 @@ local function getRareScore(word)
     return score
 end
 
--- === WORD SEARCH LOGIC ===
+-- === ORIGINAL WORD SEARCH LOGIC ===
 local function copyword(bruteforce)
     local contains, isMyTurn = getGameStatus()
     local tbl = getInfoTable()
@@ -754,7 +727,7 @@ local function copyword(bruteforce)
     end
 end
 
--- === UI ELEMENTS (MAIN TAB) ===
+-- === ORIGINAL UI ELEMENTS (MAIN TAB) ===
 MainTab:CreateInput({
    Name = "Letter Cap",
    PlaceholderText = "Enter max letter count...",
@@ -769,7 +742,7 @@ MainTab:CreateToggle({
       if autosearch then
           task_spawn(function()
               while autosearch do 
-                  task_wait(0.2)
+                  task_wait(0.25) 
                   pcall(copyword) 
               end
           end)
@@ -827,7 +800,7 @@ DictionaryTab:CreateDropdown({
 StealTab:CreateToggle({
     Name = "Steal & Reuse Enemy Words",
     CurrentValue = true,
-    Info = "Saves valid enemy words & prioritizes them next round",
+    Info = "Saves enemy words & prioritizes them next round",
     Callback = function(Value) stealWordsEnabled = Value end
 })
 
@@ -946,7 +919,6 @@ if Games then
     if registerGame then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
             resetRoundState()
-            task.delay(1, function() activeUpdateFn = nil end)
             if autojoin then 
                 task_spawn(function()
                     if autoJoinDelay > 0 then task_wait(autoJoinDelay) end
