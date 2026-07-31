@@ -340,12 +340,13 @@ local function waitFuseProgress(targetSession)
     local totalFuseTime = math.abs(1 / fuseRate)
     local targetWaitSeconds = totalFuseTime * fusePercent
 
+    local localStart = os.clock()
+
     while typingSessionId == targetSession do
         local tblCurrent = getInfoTable()
         if not tblCurrent or tblCurrent.FuseStart ~= fuseStart then break end
 
-        local elapsed = os.clock() - fuseStart
-        if elapsed < 0 then elapsed = 0 end
+        local elapsed = os.clock() - localStart
 
         currentFusionStats = string.format("%.2fs / %.2fs", math.min(elapsed, totalFuseTime), totalFuseTime)
         if fusionLabel then 
