@@ -28,6 +28,7 @@ local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local Vim = game:GetService("VirtualInputManager")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
 -- === NEW RENDER HWID & KEY AUTHENTICATION ===
 local API_URL = "https://roblox-key-api-zxnv.onrender.com/verify"
@@ -178,7 +179,7 @@ local rngVariationPercent = 0
 
 -- Fuse Delay Settings
 local useFuseProgress = true
-local fusePercent = 0.50          -- Динамический % (0.01 = 1%, 0.80 = 80%)
+local fusePercent = 0.50          
 local currentFusionStats = "0.00s / 0.00s"
 
 -- Human Typos Settings
@@ -188,9 +189,10 @@ local typoChancePercent = 3
 local wordPriorityMode = "Hyphenated / Short"
 
 local lastHandledPrompt = ""
+local lastFuseStart = 0
 local wasMyTurn = false
 local isTyping = false 
-local isSubmitting = false -- Флаг блокировки: слово отправлено, ждем смену промпта/хода
+local isSubmitting = false 
 local typingSessionId = 0
 
 local checkWordDelay = 1.0 
@@ -339,7 +341,9 @@ local function waitFuseProgress(targetSession)
     local fuseRate = tbl.FuseRate
     
     local totalFuseTime = math.abs(1 / fuseRate)
+    
     local targetWaitSeconds = totalFuseTime * fusePercent
+    targetWaitSeconds = math.max(0, targetWaitSeconds - 0.05)
 
     local localStart = os.clock()
 
@@ -367,6 +371,7 @@ local function resetRoundState()
     typingSessionId = typingSessionId + 1 
     sessionUsedWords = {} 
     lastHandledPrompt = ""
+    lastFuseStart = 0
     wasMyTurn = false
     isTyping = false
     isSubmitting = false
@@ -470,7 +475,7 @@ local function getGameTextBox()
     return nil
 end
 
--- === TYPING LOGIC (WITH HUMAN TYPOS & FUSE DELAY) ===
+-- === TYPING LOGIC (WITH CHAT PROTECTION & FAILSAFE) ===
 local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
@@ -492,6 +497,15 @@ local function typeWordMobile(word, targetPrompt)
     if currentSession ~= typingSessionId then
         print("⚠️ [DEBUG - Type]: Session changed mid-delay, canceling type.")
         isTyping = false
+        isSubmitting = false
+        return
+    end
+
+    -- 🛡️ ПРОВЕРКА НА ЧАТ: Если игрок сам что-то пишет в чате — сбрасываем ввод скрипта!
+    if UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= getGameTextBox() then
+        print("💬 [DEBUG - Chat Protect]: Player is using Chat! Aborting auto-type.")
+        isTyping = false
+        isSubmitting = false
         return
     end
 
@@ -499,6 +513,7 @@ local function typeWordMobile(word, targetPrompt)
     if currentPrompt ~= targetPrompt or not isMyTurn then
         print("⚠️ [DEBUG - Type]: Status changed before typing! Prompt: " .. tostring(currentPrompt) .. " | IsMyTurn: " .. tostring(isMyTurn))
         isTyping = false
+        isSubmitting = false
         return
     end
     
@@ -510,12 +525,25 @@ local function typeWordMobile(word, targetPrompt)
         task_wait(0.01)
     end
     
+    local interrupted = false
+
     for i = 1, #word do
-        if currentSession ~= typingSessionId then break end
+        if currentSession ~= typingSessionId then 
+            interrupted = true
+            break 
+        end
         
+        -- Проверка фокуса чата во время печати
+        if UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= textBox then
+            print("💬 [DEBUG - Chat Protect]: Player focused chat during typing! Stopping.")
+            interrupted = true
+            break
+        end
+
         local checkPrompt, checkTurn = getGameStatus()
         if checkPrompt ~= targetPrompt or not checkTurn then 
             print("⚠️ [DEBUG - Type]: Turn lost during typing string.")
+            interrupted = true
             break 
         end
         
@@ -578,10 +606,9 @@ local function typeWordMobile(word, targetPrompt)
         end
     end
     
-    if currentSession == typingSessionId then
+    if not interrupted and currentSession == typingSessionId then
         local finalPrompt, finalTurn = getGameStatus()
         if finalPrompt == targetPrompt and finalTurn then
-            -- СТАВИМ БЛОКИРОВКУ: Отправка слова пошла, больше ничего не подбирать!
             isSubmitting = true 
 
             if not instanttype then task_wait(0.02) end
@@ -595,7 +622,10 @@ local function typeWordMobile(word, targetPrompt)
             print("✅ [DEBUG - Type]: Word successfully submitted: " .. tostring(word))
         else
             if textBox then textBox.Text = "" end
+            isSubmitting = false
         end
+    else
+        isSubmitting = false
     end
     
     if currentSession == typingSessionId then
@@ -626,9 +656,11 @@ local function getRareScore(word)
     return score
 end
 
--- === WORD SEARCH LOGIC WITH PRIORITY & RACE CONDITION FIX ===
+-- === WORD SEARCH LOGIC WITH PRIORITY & CHAT SAFEGUARD ===
 local function copyword(bruteforce)
     local contains, isMyTurn = getGameStatus()
+    local tbl = getInfoTable()
+    local currentFuseStart = tbl and tbl.FuseStart or 0
     
     if not contains or contains == "" then 
         lastHandledPrompt = ""
@@ -642,23 +674,27 @@ local function copyword(bruteforce)
         return
     end
 
-    -- Сбрасываем замок отправки только при смене промпта
-    if contains ~= lastHandledPrompt then
+    -- Сбрасываем замок отправки при смене промпта или сбросе таймера (FuseStart)
+    if contains ~= lastHandledPrompt or (lastFuseStart > 0 and currentFuseStart ~= lastFuseStart) then
         isSubmitting = false
     end
 
     if isTyping and contains ~= lastHandledPrompt then
         print("🔄 [DEBUG - Search]: Prompt changed mid-type! Stopping typing session.")
         isTyping = false
+        isSubmitting = false
     end
 
-    -- БЛОКИРОВКА: Если уже идет печать ИЛИ слово уже отправлено и ждем реакцию сервера
-    if isTyping or isSubmitting then return end
+    -- Не ищем слово, если печатаем, ждем ответа ИЛИ если игрок сейчас пишет в ЧАТЕ
+    if isTyping or isSubmitting or (UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= getGameTextBox()) then 
+        return 
+    end
 
     wasMyTurn = true
 
-    if contains ~= lastHandledPrompt or bruteforce then
+    if contains ~= lastHandledPrompt or (lastFuseStart > 0 and currentFuseStart ~= lastFuseStart) or bruteforce then
         lastHandledPrompt = contains
+        lastFuseStart = currentFuseStart
         print("🎯 [DEBUG - Search]: New turn detected! Prompt: " .. tostring(contains))
         
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
