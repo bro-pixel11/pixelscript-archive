@@ -21,8 +21,8 @@ local tonumber = tonumber
 local ipairs = ipairs
 local pairs = pairs
 local getgc = getgc
-local debug_getinfo = debug.getinfo
-local debug_getupvalues = debug.getupvalues
+local debug_getinfo = debug_getinfo
+local debug_getupvalues = debug_getupvalues
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -290,6 +290,25 @@ local function applyRngVariation(baseValue)
     return result < 0 and 0 or result
 end
 
+-- === FALLBACK UI WORD SCRAPER FOR STEALING ===
+local function getUIEnemyTypingText()
+    local localPlayer = Players.LocalPlayer
+    local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+
+    for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "PlayerGui"}) do
+        local target = playerGui:FindFirstChild(guiName) or playerGui
+        local wordBox = target:FindFirstChild("Word", true) or target:FindFirstChild("PlayerWord", true) or target:FindFirstChild("TypedText", true)
+        if wordBox and wordBox:IsA("TextLabel") and wordBox.Visible and #wordBox.Text >= 2 then
+            local clean = wordBox.Text:lower():gsub("%s+", "")
+            if clean ~= "" and not clean:find("waiting") and not clean:find("%d") then
+                return clean
+            end
+        end
+    end
+    return nil
+end
+
 -- === NETWORK EVENTS INITIALIZATION & WORD STEALING ===
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
@@ -324,7 +343,12 @@ if Network then
                     if type(arg) == "string" then
                         local lowerArg = arg:lower()
                         if not systemStrings[lowerArg] and not lowerArg:find("abcdefg") then
-                            currentTypingBuffer = lowerArg
+                            -- ИСПРАВЛЕНИЕ СБОРА СЛОВА: накапливаем/склеиваем буквы в буфер
+                            if #lowerArg == 1 then
+                                currentTypingBuffer = currentTypingBuffer .. lowerArg
+                            elseif #lowerArg > #currentTypingBuffer then
+                                currentTypingBuffer = lowerArg
+                            end
                         end
                     elseif typeof and typeof(arg) == "Instance" and arg:IsA("Player") then
                         currentSpeakerPlayer = arg
@@ -334,7 +358,6 @@ if Network then
                     end
                 end
 
-                -- Если из эвента игрок не вытащился, берем из GC/Game state
                 if not currentSpeakerPlayer then
                     currentSpeakerPlayer = getCurrentSpeakerPlayer()
                     if currentSpeakerPlayer then
@@ -347,7 +370,6 @@ if Network then
                     if type(args[i]) == "string" and args[i]:lower() == "changepossessor" then
                         local localPlayer = Players.LocalPlayer
                         
-                        -- СТРОГАЯ ПРОВЕРКА НА СЕБЯ
                         local isMe = false
                         if localPlayer then
                             local turnId = GetTurn()
@@ -360,10 +382,15 @@ if Network then
                             end
                         end
 
+                        -- Если из сетевого буфера ничего не пришло, берём фоллбек из UI элемента
+                        if #currentTypingBuffer < 2 then
+                            local uiText = getUIEnemyTypingText()
+                            if uiText then currentTypingBuffer = uiText end
+                        end
+
                         if #currentTypingBuffer > 1 then
                             sessionUsedWords[currentTypingBuffer] = true
                             
-                            -- СТИЛИМ ТОЛЬКО ЕСЛИ ЭТО ТОЧНО ЧУЖОЕ СЛОВО
                             if stealWordsEnabled and not isMe and isValidDictionaryWord(currentTypingBuffer) then
                                 local ownerPlayer = currentSpeakerPlayer or getCurrentSpeakerPlayer()
                                 local finalOwner = ownerPlayer and ownerPlayer.Name or (currentSpeakerName ~= "" and currentSpeakerName or "Opponent")
