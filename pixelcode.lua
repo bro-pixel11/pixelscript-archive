@@ -79,7 +79,7 @@ print("✅ [Bro-Pixel Auth]: Authorization successful: " .. tostring(authMessage
 
 getgenv().deletewhendupefound = true
 
-local elapsedLabel, turnsLabel, promptLabel, solutionsLabel, matchLabel
+local elapsedLabel, turnsLabel, promptLabel, solutionsLabel, matchLabel, fusionLabel
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
@@ -175,6 +175,11 @@ local autoJoinDelay = 2
 local jitterEnabled = false 
 local jitterIntensity = 0.05 
 local rngVariationPercent = 0 
+
+-- Fuse Delay Settings
+local useFuseProgress = true
+local fusePercent = 0.50          -- Динамический % (0.01 = 1%, 0.80 = 80%)
+local currentFusionStats = "0.00s / 0.00s"
 
 -- Human Typos Settings
 local typosEnabled = false
@@ -301,6 +306,58 @@ local function getActiveUpdateInfoFrame()
     return nil
 end
 
+local function getInfoTable()
+    local fn = getActiveUpdateInfoFrame()
+    if fn then
+        local s, r = pcall(function()
+            for _, vv in pairs(debug_getupvalues(fn)) do
+                if type(vv) == "table" and vv.FuseStart ~= nil then 
+                    return vv 
+                end
+            end
+        end)
+        if s and type(r) == "table" then return r end
+    end
+    return nil
+end
+
+-- === FUSE DELAY LOGIC ===
+local function waitFuseProgress(targetSession)
+    if not useFuseProgress then return end
+
+    local tbl = getInfoTable()
+    
+    if not tbl or not tbl.FuseStart or tbl.FuseStart <= 1000 or not tbl.FuseRate or tbl.FuseRate == 0 then
+        if checkWordDelay > 0 and not instanttype then
+            task.wait(applyRngVariation(checkWordDelay))
+        end
+        return
+    end
+
+    local fuseStart = tbl.FuseStart
+    local fuseRate = tbl.FuseRate
+    
+    local totalFuseTime = math.abs(1 / fuseRate)
+    local targetWaitSeconds = totalFuseTime * fusePercent
+
+    while typingSessionId == targetSession do
+        local tblCurrent = getInfoTable()
+        if not tblCurrent or tblCurrent.FuseStart ~= fuseStart then break end
+
+        local elapsed = os.clock() - fuseStart
+        if elapsed < 0 then elapsed = 0 end
+
+        currentFusionStats = string.format("%.2fs / %.2fs", math.min(elapsed, totalFuseTime), totalFuseTime)
+        if fusionLabel then 
+            fusionLabel:Set("Fusion Progress: " .. currentFusionStats) 
+        end
+
+        if elapsed >= targetWaitSeconds then break end
+        
+        task.wait(0.01)
+    end
+end
+
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
     print("🔄 [DEBUG - Game Reset]: Resetting Round State...")
@@ -318,6 +375,7 @@ local function resetRoundState()
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
+    if fusionLabel then fusionLabel:Set("Fusion Progress: 0.00s / 0.00s") end
 end
 
 -- === CORE DATA GETTERS ===
@@ -409,7 +467,7 @@ local function getGameTextBox()
     return nil
 end
 
--- === TYPING LOGIC (WITH HUMAN TYPOS) ===
+-- === TYPING LOGIC (WITH HUMAN TYPOS & FUSE DELAY) ===
 local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
@@ -419,9 +477,13 @@ local function typeWordMobile(word, targetPrompt)
 
     print("⌨️ [DEBUG - Type]: Starting typing process for word: " .. tostring(word))
 
-    if not instanttype and checkWordDelay > 0 then 
-        local finalDelay = applyRngVariation(checkWordDelay)
-        task_wait(finalDelay) 
+    if not instanttype then 
+        if useFuseProgress then
+            waitFuseProgress(currentSession)
+        elseif checkWordDelay > 0 then 
+            local finalDelay = applyRngVariation(checkWordDelay)
+            task_wait(finalDelay) 
+        end
     end
     
     if currentSession ~= typingSessionId then
@@ -799,9 +861,26 @@ SettingsTab:CreateSlider({
    Callback = function(Value) autoJoinDelay = Value end,
 })
 
+SettingsTab:CreateToggle({
+   Name = "Dynamic Fuse Delay",
+   CurrentValue = true,
+   Info = "Waits for turn timer % before typing",
+   Callback = function(Value) useFuseProgress = Value end,
+})
+
 SettingsTab:CreateSlider({
-   Name = "Check Word Delay",
-   Info = "Delay before typing (0.1s to 2.0s)",
+   Name = "Fuse Delay Target %",
+   Info = "Target % of fuse time to wait (1% to 95%)",
+   Range = {1, 95},
+   Increment = 1,
+   Suffix = "%",
+   CurrentValue = 50,
+   Callback = function(Value) fusePercent = Value / 100 end,
+})
+
+SettingsTab:CreateSlider({
+   Name = "Check Word Delay (Fallback)",
+   Info = "Static delay if fuse not active (0.1s to 2.0s)",
    Range = {1, 20}, 
    Increment = 1,
    Suffix = " (x0.1 sec)",
@@ -875,6 +954,7 @@ turnsLabel = MainTab:CreateLabel("Total Turns: 0")
 promptLabel = MainTab:CreateLabel("Current Prompt: None")
 solutionsLabel = MainTab:CreateLabel("Solutions Found: 0")
 matchLabel = MainTab:CreateLabel("Current Match: None")
+fusionLabel = MainTab:CreateLabel("Fusion Progress: 0.00s / 0.00s")
 MainTab:CreateSection("------------------")
 
 -- === BACKGROUND AUTO JOIN THREAD ===
