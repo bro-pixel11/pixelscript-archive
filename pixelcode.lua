@@ -190,6 +190,7 @@ local wordPriorityMode = "Hyphenated / Short"
 local lastHandledPrompt = ""
 local wasMyTurn = false
 local isTyping = false 
+local isSubmitting = false -- Флаг блокировки: слово отправлено, ждем смену промпта/хода
 local typingSessionId = 0
 
 local checkWordDelay = 1.0 
@@ -368,6 +369,7 @@ local function resetRoundState()
     lastHandledPrompt = ""
     wasMyTurn = false
     isTyping = false
+    isSubmitting = false
     
     pcall(function()
         collectgarbage("collect")
@@ -579,15 +581,18 @@ local function typeWordMobile(word, targetPrompt)
     if currentSession == typingSessionId then
         local finalPrompt, finalTurn = getGameStatus()
         if finalPrompt == targetPrompt and finalTurn then
+            -- СТАВИМ БЛОКИРОВКУ: Отправка слова пошла, больше ничего не подбирать!
+            isSubmitting = true 
+
             if not instanttype then task_wait(0.02) end
             Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
             if not instanttype then task_wait(0.01) end
             Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
             if not instanttype then task_wait(0.03) end
+            
             totalTurns = totalTurns + 1
             if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
             print("✅ [DEBUG - Type]: Word successfully submitted: " .. tostring(word))
-            lastHandledPrompt = ""
         else
             if textBox then textBox.Text = "" end
         end
@@ -621,18 +626,25 @@ local function getRareScore(word)
     return score
 end
 
--- === WORD SEARCH LOGIC WITH PRIORITY ===
+-- === WORD SEARCH LOGIC WITH PRIORITY & RACE CONDITION FIX ===
 local function copyword(bruteforce)
     local contains, isMyTurn = getGameStatus()
     
     if not contains or contains == "" then 
         lastHandledPrompt = ""
+        isSubmitting = false
         return 
     end
 
     if not isMyTurn then
         lastHandledPrompt = ""
+        isSubmitting = false
         return
+    end
+
+    -- Сбрасываем замок отправки только при смене промпта
+    if contains ~= lastHandledPrompt then
+        isSubmitting = false
     end
 
     if isTyping and contains ~= lastHandledPrompt then
@@ -640,7 +652,8 @@ local function copyword(bruteforce)
         isTyping = false
     end
 
-    if isTyping then return end
+    -- БЛОКИРОВКА: Если уже идет печать ИЛИ слово уже отправлено и ждем реакцию сервера
+    if isTyping or isSubmitting then return end
 
     wasMyTurn = true
 
