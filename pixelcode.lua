@@ -81,7 +81,7 @@ print("✅ [Bro-Pixel Auth]: Authorization successful: " .. tostring(authMessage
 getgenv().deletewhendupefound = true
 
 local elapsedLabel, turnsLabel, promptLabel, solutionsLabel, matchLabel, fusionLabel
-local lastStolenLabel, lastUsedStolenLabel
+local lastStolenLabel, lastStolenFromLabel, lastUsedStolenLabel, lastUsedStolenFromLabel
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
@@ -240,7 +240,7 @@ if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
     if gameEvent then
         local currentTypingBuffer = ""
-        local currentSpeakerName = "Unknown"
+        local currentSpeakerName = ""
         local systemStrings = {
             ["typingevent"] = true,
             ["changepossessor"] = true,
@@ -266,36 +266,47 @@ if Network then
                         if not systemStrings[lowerArg] and not lowerArg:find("abcdefg") then
                             currentTypingBuffer = lowerArg
                         end
-                    elseif type(arg) == "table" and arg.Name then
-                        currentSpeakerName = tostring(arg.Name)
                     elseif typeof and typeof(arg) == "Instance" and arg:IsA("Player") then
                         currentSpeakerName = arg.Name
+                    elseif type(arg) == "table" and arg.Name then
+                        currentSpeakerName = tostring(arg.Name)
                     end
                 end
             else
                 for i = 1, #args do
                     if type(args[i]) == "string" and args[i]:lower() == "changepossessor" then
                         local localPlayer = Players.LocalPlayer
-                        local isMe = localPlayer and (currentSpeakerName == localPlayer.Name or currentSpeakerName == localPlayer.DisplayName)
                         
-                        if #currentTypingBuffer > 1 and not isMe then
+                        local isMe = false
+                        if localPlayer then
+                            if currentSpeakerName == localPlayer.Name or currentSpeakerName == localPlayer.DisplayName then
+                                isMe = true
+                            end
+                        end
+                        
+                        if #currentTypingBuffer > 1 then
                             sessionUsedWords[currentTypingBuffer] = true
                             
-                            -- 🥷 STEAL LOGIC WITH DICTIONARY CHECK
-                            if stealWordsEnabled and isValidDictionaryWord(currentTypingBuffer) then
+                            if stealWordsEnabled and not isMe and isValidDictionaryWord(currentTypingBuffer) then
+                                local finalOwner = (currentSpeakerName ~= "" and currentSpeakerName) or "Enemy Player"
+                                
                                 if not stolenWords[currentTypingBuffer] then
-                                    stolenWords[currentTypingBuffer] = { owner = currentSpeakerName }
-                                    print("🥷 [STEAL]: Successfully stolen word: '" .. currentTypingBuffer .. "' from " .. currentSpeakerName)
-                                    if lastStolenLabel then
-                                        lastStolenLabel:Set("Stolen Word:\n" .. currentTypingBuffer:upper() .. "\n\nFrom:\n" .. currentSpeakerName)
-                                    end
+                                    stolenWords[currentTypingBuffer] = { owner = finalOwner }
+                                    print("🥷 [STEAL]: Stolen '" .. currentTypingBuffer .. "' from " .. finalOwner)
+                                    
+                                    if lastStolenLabel then lastStolenLabel:Set("Stolen Word: " .. currentTypingBuffer:upper()) end
+                                    if lastStolenFromLabel then lastStolenFromLabel:Set("Stolen From: " .. finalOwner) end
                                 end
                             else
-                                print("🗑️ [STEAL]: Ignored typo/invalid word: " .. currentTypingBuffer)
+                                if isMe then
+                                    print("🛡️ [STEAL]: Skipped self-typed word: " .. currentTypingBuffer)
+                                else
+                                    print("🗑️ [STEAL]: Ignored invalid word: " .. currentTypingBuffer)
+                                end
                             end
                             
                             currentTypingBuffer = ""
-                            currentSpeakerName = "Unknown"
+                            currentSpeakerName = ""
                         end
                         break
                     end
@@ -712,10 +723,10 @@ local function copyword(bruteforce)
                 local stolenData = stolenWords[cand]
                 if stolenData then
                     finalword = cand
-                    print("🏴‍☠️ [STEAL]: Reusing stolen word: " .. finalword .. " (Original owner: " .. stolenData.owner .. ")")
-                    if lastUsedStolenLabel then
-                        lastUsedStolenLabel:Set("Used Stolen Word:\n" .. finalword:upper() .. "\n\nFrom:\n" .. stolenData.owner)
-                    end
+                    print("🏴‍☠️ [STEAL]: Reusing stolen word: " .. finalword .. " (Owner: " .. stolenData.owner .. ")")
+                    
+                    if lastUsedStolenLabel then lastUsedStolenLabel:Set("Used Stolen Word: " .. finalword:upper()) end
+                    if lastUsedStolenFromLabel then lastUsedStolenFromLabel:Set("Used Stolen From: " .. stolenData.owner) end
                     break
                 end
             end
@@ -882,9 +893,13 @@ StealTab:CreateToggle({
     Callback = function(Value) stealWordsEnabled = Value end
 })
 
-StealTab:CreateSection("Steal Logs")
-lastStolenLabel = StealTab:CreateLabel("Stolen Word:\nNone\n\nFrom:\nNone")
-lastUsedStolenLabel = StealTab:CreateLabel("Used Stolen Word:\nNone\n\nFrom:\nNone")
+StealTab:CreateSection("Stolen Status")
+lastStolenLabel = StealTab:CreateLabel("Stolen Word: None")
+lastStolenFromLabel = StealTab:CreateLabel("Stolen From: None")
+
+StealTab:CreateSection("Used Stolen Status")
+lastUsedStolenLabel = StealTab:CreateLabel("Used Stolen Word: None")
+lastUsedStolenFromLabel = StealTab:CreateLabel("Used Stolen From: None")
 
 -- === UI ELEMENTS (SETTINGS TAB) ===
 SettingsTab:CreateSlider({
