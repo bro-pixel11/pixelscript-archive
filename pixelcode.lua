@@ -154,7 +154,7 @@ local function loadDictionaryAsync(url)
                     end
                 end
                 
-                if total % 4000 == 0 then
+                if total % 8000 == 0 then
                     statusLabel:Set("Indexing: " .. total .. " words...")
                     task.wait()
                 end
@@ -211,7 +211,6 @@ local function getActiveUpdateInfoFrame()
     for _, v in pairs(getgc()) do
         if isValidStructure(v) then
             activeUpdateFn = v
-            print("🔍 [DEBUG - GC]: Found new active updateInfoFrame function!")
             return v
         end
     end
@@ -231,7 +230,6 @@ local function GetTurn()
     return nil
 end
 
--- === HELPER TO GET PLAYER NAME BY ID OR TURN ===
 local function getCurrentSpeakerPlayer()
     local turnId = GetTurn()
     if turnId then
@@ -243,7 +241,7 @@ end
 
 -- === STATE & SETTINGS ===
 local sessionUsedWords = {}
-local stolenWords = {} -- [word] = { owner = "PlayerName" }
+local stolenWords = {}
 local stealWordsEnabled = true
 
 local lettercap = math_huge
@@ -256,12 +254,10 @@ local jitterEnabled = false
 local jitterIntensity = 0.05 
 local rngVariationPercent = 0 
 
--- Fuse Delay Settings
 local useFuseProgress = true
 local fusePercent = 0.50          
 local currentFusionStats = "0.00s / 0.00s"
 
--- Human Typos Settings
 local typosEnabled = false
 local typoChancePercent = 3
 
@@ -296,8 +292,8 @@ local function getUIEnemyTypingText()
     local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
     if not playerGui then return nil end
 
-    for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "PlayerGui"}) do
-        local target = playerGui:FindFirstChild(guiName) or playerGui
+    local target = playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI")
+    if target then
         local wordBox = target:FindFirstChild("Word", true) or target:FindFirstChild("PlayerWord", true) or target:FindFirstChild("TypedText", true)
         if wordBox and wordBox:IsA("TextLabel") and wordBox.Visible and #wordBox.Text >= 2 then
             local clean = wordBox.Text:lower():gsub("%s+", "")
@@ -309,7 +305,7 @@ local function getUIEnemyTypingText()
     return nil
 end
 
--- === NETWORK EVENTS INITIALIZATION & WORD STEALING ===
+-- === OPTIMIZED NETWORK EVENTS INITIALIZATION & WORD STEALING ===
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
@@ -318,104 +314,53 @@ if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
     if gameEvent then
         local currentTypingBuffer = ""
-        local currentSpeakerName = ""
-        local currentSpeakerPlayer = nil
-        local systemStrings = {
-            ["typingevent"] = true,
-            ["changepossessor"] = true,
-            ["english"] = true,
-        }
 
         gameEvent.OnClientEvent:Connect(function(...)
             local args = {...}
-            local isTypingEvent = false
+            if #args == 0 then return end
             
-            for i = 1, #args do
-                if type(args[i]) == "string" and args[i]:lower() == "typingevent" then
-                    isTypingEvent = true
-                    break
-                end
-            end
+            local eventName = type(args[1]) == "string" and args[1]:lower() or ""
 
-            if isTypingEvent then
-                for i = 1, #args do
-                    local arg = args[i]
-                    if type(arg) == "string" then
-                        local lowerArg = arg:lower()
-                        if not systemStrings[lowerArg] and not lowerArg:find("abcdefg") then
-                            -- ИСПРАВЛЕНИЕ СБОРА СЛОВА: накапливаем/склеиваем буквы в буфер
-                            if #lowerArg == 1 then
-                                currentTypingBuffer = currentTypingBuffer .. lowerArg
-                            elseif #lowerArg > #currentTypingBuffer then
-                                currentTypingBuffer = lowerArg
-                            end
-                        end
-                    elseif typeof and typeof(arg) == "Instance" and arg:IsA("Player") then
-                        currentSpeakerPlayer = arg
-                        currentSpeakerName = arg.Name
-                    elseif type(arg) == "table" and arg.Name then
-                        currentSpeakerName = tostring(arg.Name)
+            -- 1. Быстрое накапливание букв (БЕЗ тяжелых проверок внутри события)
+            if eventName == "typingevent" then
+                local arg2 = args[2]
+                if type(arg2) == "string" then
+                    local lowerArg = arg2:lower()
+                    if #lowerArg == 1 and lowerArg:find("%a") then
+                        currentTypingBuffer = currentTypingBuffer .. lowerArg
+                    elseif #lowerArg > #currentTypingBuffer and not lowerArg:find("abcdefg") then
+                        currentTypingBuffer = lowerArg
                     end
                 end
 
-                if not currentSpeakerPlayer then
-                    currentSpeakerPlayer = getCurrentSpeakerPlayer()
-                    if currentSpeakerPlayer then
-                        currentSpeakerName = currentSpeakerPlayer.Name
-                    end
+            -- 2. Смена хода — обработка накопленного слова
+            elseif eventName == "changepossessor" then
+                local localPlayer = Players.LocalPlayer
+                local turnId = GetTurn()
+                local isMe = (localPlayer and turnId and turnId == localPlayer.UserId)
+
+                -- Fallback через UI, если сетевой буфер пуст
+                if #currentTypingBuffer < 2 then
+                    local uiText = getUIEnemyTypingText()
+                    if uiText then currentTypingBuffer = uiText end
                 end
 
-            else
-                for i = 1, #args do
-                    if type(args[i]) == "string" and args[i]:lower() == "changepossessor" then
-                        local localPlayer = Players.LocalPlayer
+                if #currentTypingBuffer > 1 then
+                    sessionUsedWords[currentTypingBuffer] = true
+                    
+                    if stealWordsEnabled and not isMe and isValidDictionaryWord(currentTypingBuffer) then
+                        local ownerPlayer = getCurrentSpeakerPlayer()
+                        local finalOwner = ownerPlayer and ownerPlayer.Name or "Opponent"
                         
-                        local isMe = false
-                        if localPlayer then
-                            local turnId = GetTurn()
-                            if turnId and turnId == localPlayer.UserId then
-                                isMe = true
-                            elseif currentSpeakerPlayer and currentSpeakerPlayer == localPlayer then
-                                isMe = true
-                            elseif currentSpeakerName ~= "" and (currentSpeakerName == localPlayer.Name or currentSpeakerName == localPlayer.DisplayName) then
-                                isMe = true
-                            end
-                        end
-
-                        -- Если из сетевого буфера ничего не пришло, берём фоллбек из UI элемента
-                        if #currentTypingBuffer < 2 then
-                            local uiText = getUIEnemyTypingText()
-                            if uiText then currentTypingBuffer = uiText end
-                        end
-
-                        if #currentTypingBuffer > 1 then
-                            sessionUsedWords[currentTypingBuffer] = true
+                        if not stolenWords[currentTypingBuffer] then
+                            stolenWords[currentTypingBuffer] = { owner = finalOwner }
+                            print("🥷 [STEAL]: Stolen '" .. currentTypingBuffer .. "' from " .. finalOwner)
                             
-                            if stealWordsEnabled and not isMe and isValidDictionaryWord(currentTypingBuffer) then
-                                local ownerPlayer = currentSpeakerPlayer or getCurrentSpeakerPlayer()
-                                local finalOwner = ownerPlayer and ownerPlayer.Name or (currentSpeakerName ~= "" and currentSpeakerName or "Opponent")
-                                
-                                if not stolenWords[currentTypingBuffer] then
-                                    stolenWords[currentTypingBuffer] = { owner = finalOwner }
-                                    print("🥷 [STEAL]: Stolen '" .. currentTypingBuffer .. "' from " .. finalOwner)
-                                    
-                                    if lastStolenLabel then lastStolenLabel:Set("Stolen Word: " .. currentTypingBuffer:upper()) end
-                                    if lastStolenFromLabel then lastStolenFromLabel:Set("Stolen From: " .. finalOwner) end
-                                end
-                            else
-                                if isMe then
-                                    print("🛡️ [STEAL]: Skipped self-typed word: " .. currentTypingBuffer)
-                                else
-                                    print("🗑️ [STEAL]: Ignored invalid word: " .. currentTypingBuffer)
-                                end
-                            end
-                            
-                            currentTypingBuffer = ""
-                            currentSpeakerName = ""
-                            currentSpeakerPlayer = nil
+                            if lastStolenLabel then lastStolenLabel:Set("Stolen Word: " .. currentTypingBuffer:upper()) end
+                            if lastStolenFromLabel then lastStolenFromLabel:Set("Stolen From: " .. finalOwner) end
                         end
-                        break
                     end
+                    currentTypingBuffer = ""
                 end
             end
         end)
@@ -462,13 +407,12 @@ local function waitFuseProgress(targetSession)
         if fusionLabel then fusionLabel:Set("Fusion Progress: " .. currentFusionStats) end
 
         if elapsed >= targetWaitSeconds then break end
-        task.wait(0.01)
+        task.wait(0.03)
     end
 end
 
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
-    print("🔄 [DEBUG - Game Reset]: Resetting Round State...")
     activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
     sessionUsedWords = {} 
@@ -477,8 +421,6 @@ local function resetRoundState()
     wasMyTurn = false
     isTyping = false
     isSubmitting = false
-    
-    pcall(function() collectgarbage("collect") end)
 
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
@@ -501,8 +443,8 @@ local function GetLetters()
     local localPlayer = Players.LocalPlayer
     local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
-        for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "PlayerGui"}) do
-            local target = playerGui:FindFirstChild(guiName) or playerGui
+        local target = playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI")
+        if target then
             local promptLbl = target:FindFirstChild("PromptLabel", true) or target:FindFirstChild("Prompt", true)
             if promptLbl and promptLbl:IsA("TextLabel") and promptLbl.Visible and promptLbl.Text ~= "" then
                 return promptLbl.Text
@@ -525,20 +467,6 @@ local function getGameStatus()
     local currentTurnId = GetTurn()
     local isMyTurn = (currentTurnId == localPlayer.UserId)
 
-    if currentTurnId == nil then
-        local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-        if playerGui then
-            for _, v in pairs(playerGui:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Visible and v.Parent and v.Parent.Name ~= "Rayfield" then
-                    local text = v.Text:lower()
-                    if string_find(text, "quick") or string_find(text, "быстро") or string_find(text, "your turn") or string_find(text, "ходи") then
-                        isMyTurn = true
-                        break
-                    end
-                end
-            end
-        end
-    end
     return prompt, isMyTurn
 end
 
@@ -547,7 +475,8 @@ local function getGameTextBox()
     if not localPlayer then return nil end
     local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
     if not playerGui then return nil end
-    for _, v in pairs(playerGui:GetDescendants()) do
+    local target = playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI") or playerGui
+    for _, v in pairs(target:GetDescendants()) do
         if v:IsA("TextBox") and v.Visible and v.Parent and v.Parent.Name ~= "Rayfield" then return v end
     end
     return nil
@@ -560,8 +489,6 @@ local function typeWordMobile(word, targetPrompt)
     
     typingSessionId = typingSessionId + 1
     local currentSession = typingSessionId
-
-    print("⌨️ [DEBUG - Type]: Starting typing process for word: " .. tostring(word))
 
     if not instanttype then 
         if useFuseProgress then
@@ -579,7 +506,6 @@ local function typeWordMobile(word, targetPrompt)
     end
 
     if UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= getGameTextBox() then
-        print("💬 [DEBUG - Chat Protect]: Player is using Chat! Aborting auto-type.")
         isTyping = false
         isSubmitting = false
         return
@@ -680,7 +606,6 @@ local function typeWordMobile(word, targetPrompt)
             
             totalTurns = totalTurns + 1
             if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
-            print("✅ [DEBUG - Type]: Word successfully submitted: " .. tostring(word))
         else
             if textBox then textBox.Text = "" end
             isSubmitting = false
@@ -709,7 +634,7 @@ local function getRareScore(word)
     return score
 end
 
--- === WORD SEARCH LOGIC (WITH STEAL PRIORITY & CHAT SAFEGUARD) ===
+-- === WORD SEARCH LOGIC ===
 local function copyword(bruteforce)
     local contains, isMyTurn = getGameStatus()
     local tbl = getInfoTable()
@@ -745,7 +670,6 @@ local function copyword(bruteforce)
     if contains ~= lastHandledPrompt or (lastFuseStart > 0 and currentFuseStart ~= lastFuseStart) or bruteforce then
         lastHandledPrompt = contains
         lastFuseStart = currentFuseStart
-        print("🎯 [DEBUG - Search]: New turn detected! Prompt: " .. tostring(contains))
         
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
 
@@ -780,8 +704,6 @@ local function copyword(bruteforce)
                 local stolenData = stolenWords[cand]
                 if stolenData then
                     finalword = cand
-                    print("🏴‍☠️ [STEAL]: Reusing stolen word: " .. finalword .. " (Owner: " .. stolenData.owner .. ")")
-                    
                     if lastUsedStolenLabel then lastUsedStolenLabel:Set("Used Stolen Word: " .. finalword:upper()) end
                     if lastUsedStolenFromLabel then lastUsedStolenFromLabel:Set("Used Stolen From: " .. stolenData.owner) end
                     break
@@ -846,7 +768,6 @@ local function copyword(bruteforce)
         if finalword then
             sessionUsedWords[finalword] = true
             if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
-            print("💡 [DEBUG - Search]: Picked word: " .. tostring(finalword))
             
             if autotype and isMyTurn then
                 task_spawn(function()
@@ -855,7 +776,6 @@ local function copyword(bruteforce)
             end
         else
             if matchLabel then matchLabel:Set("Current Match: Not Found") end
-            print("❌ [DEBUG - Search]: No available words found for prompt: " .. tostring(contains))
             lastHandledPrompt = ""
         end
     end
@@ -874,15 +794,14 @@ MainTab:CreateToggle({
    Callback = function(Value)
       autosearch = Value
       if autosearch then
-          print("▶️ [DEBUG]: Auto Search Enabled")
           task_spawn(function()
               local waitingCounter = 0
               while autosearch do 
-                  task_wait(0.15)
+                  task_wait(0.25)
                   local currentPrompt = GetLetters()
                   if currentPrompt == nil or currentPrompt:lower():find("waiting") then
                       waitingCounter = waitingCounter + 1
-                      if waitingCounter >= 10 then
+                      if waitingCounter >= 6 then
                           activeUpdateFn = nil 
                           waitingCounter = 0
                       end
@@ -1027,11 +946,11 @@ SettingsTab:CreateToggle({
 
 SettingsTab:CreateSlider({
    Name = "Jitter Delay",
-   Range = {1, 20}, 
-   Increment = 1,
+   Range = {1, 200}, 
+   Increment = 5,
    Suffix = " ms", 
-   CurrentValue = 5, 
-   Callback = function(Value) jitterIntensity = Value / 100 end,
+   CurrentValue = 50, 
+   Callback = function(Value) jitterIntensity = Value / 1000 end,
 })
 
 SettingsTab:CreateToggle({
@@ -1075,35 +994,6 @@ if Games then
         end)
     end
 end
-
--- === ANTI-DUPE (UI FALLBACK) ===
-task_spawn(function()
-    while task_wait(0.8) do
-        if not autosearch then continue end
-        local localPlayer = Players.LocalPlayer
-        local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
-        if not playerGui then continue end
-
-        local targetGui = playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI")
-        if targetGui then
-            for _, child in ipairs(targetGui:GetChildren()) do
-                if child:IsA("Frame") or child:IsA("ScrollingFrame") then
-                    for _, v in ipairs(child:GetChildren()) do
-                        if v:IsA("TextLabel") and v.Visible and #v.Text >= 2 then
-                            local text = v.Text:gsub("%s+", "")
-                            if text == text:upper() and not text:find("%d") and not text:find("TURN") and not text:find("ХОД") then
-                                local lowerWord = text:lower()
-                                if not sessionUsedWords[lowerWord] then
-                                    sessionUsedWords[lowerWord] = true
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
 
 -- === TIMER LOOP ===
 task_spawn(function()
