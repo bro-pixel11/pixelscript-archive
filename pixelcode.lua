@@ -185,10 +185,10 @@ end
 loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt")
 
 -- === STATE & SETTINGS ===
-local sessionUsedWords = {} -- Исключительно слова, напечатанные LocalPlayer
-local seenPlayerWords = {}  -- Чужие слова, замеченные на сервере
-local stolenWords = {}     -- Массив объектов: {{word="...", playerId=..., playerName="...", used=false, time=...}}
-local typingBuffers = {}   -- Персональные буферы: [playerId] = { word = "...", lastUpdate = ... }
+local sessionUsedWords = {}  -- Исключительно слова, напечатанные LocalPlayer
+local seenPlayerWords = {}   -- Чужие слова, замеченные на сервере
+local stolenWordsMap = {}    -- Хэш-таблица украденных слов: [word] = { playerName = "...", used = false }
+local typingBuffers = {}    -- Персональные буферы: [playerId] = { word = "...", lastUpdate = ... }
 local playerCache = {}
 
 local lettercap = math_huge
@@ -255,7 +255,7 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === IMPROVED STEAL SYSTEM (WITH DICTIONARY VALIDATION) ===
+-- === HIGH-PERFORMANCE STEAL SYSTEM (WITH DEBUG PRINT) ===
 local Network = ReplicatedStorage:FindFirstChild("Network")
 if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
@@ -268,6 +268,10 @@ if Network then
 
         gameEvent.OnClientEvent:Connect(function(...)
             local args = {...}
+            
+            -- 🔍 ДОБАВЛЕННЫЙ ПРИНТ ДЛЯ ОТЛАДКИ АРГУМЕНТОВ
+            print("typingevent:", unpack(args))
+
             local isTypingEvent = false
             local eventPlayerId = nil
             local typedString = nil
@@ -308,24 +312,22 @@ if Network then
                             if word and #word > 1 then
                                 seenPlayerWords[word] = true
 
-                                -- Проверяем, существует ли слово в словаре игры перед воровством
                                 if pid ~= myUserId then
+                                    -- Проверяем валидность и сохраняем в O(1) хэш-таблицу
                                     if isWordInDictionary(word) then
-                                        local pName = getPlayerNameFromId(pid)
-                                        
-                                        table_insert(stolenWords, {
-                                            word = word,
-                                            playerId = pid,
-                                            playerName = pName,
-                                            used = false,
-                                            time = os_clock()
-                                        })
+                                        if not stolenWordsMap[word] then
+                                            local pName = getPlayerNameFromId(pid)
+                                            stolenWordsMap[word] = {
+                                                playerName = pName,
+                                                used = false
+                                            }
 
-                                        if stolenWordLabel then stolenWordLabel:Set("Stolen Word: " .. word) end
-                                        if stolenFromLabel then stolenFromLabel:Set("From: " .. pName) end
-                                        print("🥷 [STEAL]: Stolen valid word '" .. word .. "' from " .. pName)
+                                            if stolenWordLabel then stolenWordLabel:Set("Stolen Word: " .. word) end
+                                            if stolenFromLabel then stolenFromLabel:Set("From: " .. pName) end
+                                            print("🥷 [STEAL]: Stolen valid word '" .. word .. "' from " .. pName)
+                                        end
                                     else
-                                        print("⚠️ [STEAL IGNORED]: Word '" .. word .. "' not found in dictionary (typo/invalid).")
+                                        print("⚠️ [STEAL IGNORED]: Word '" .. word .. "' not found in dictionary.")
                                     end
                                 end
                             end
@@ -340,7 +342,7 @@ if Network then
     end
 end
 
--- === DYNAMIC GC FUNCTION SEARCH (FAST, SAFE & SELF-RESETTING) ===
+-- === DYNAMIC GC FUNCTION SEARCH ===
 local activeUpdateFn = nil
 
 local function isValidStructure(fn)
@@ -431,9 +433,7 @@ local function waitFuseProgress(targetSession)
 
     local fuseStart = tbl.FuseStart
     local fuseRate = tbl.FuseRate
-    
     local totalFuseTime = math.abs(1 / fuseRate)
-    
     local targetWaitSeconds = totalFuseTime * fusePercent
     targetWaitSeconds = math.max(0, targetWaitSeconds - 0.05)
 
@@ -464,7 +464,7 @@ local function resetRoundState()
     
     table_clear(sessionUsedWords)
     table_clear(seenPlayerWords)
-    table_clear(stolenWords)
+    table_clear(stolenWordsMap)
     table_clear(typingBuffers)
     table_clear(playerCache)
     
@@ -485,7 +485,6 @@ local function resetRoundState()
 end
 
 -- === CORE DATA GETTERS ===
-
 local function GetLetters()
     local fn = getActiveUpdateInfoFrame()
     if fn then
@@ -573,7 +572,7 @@ local function getGameTextBox()
     return nil
 end
 
--- === TYPING LOGIC (WITH CHAT PROTECTION & FAILSAFE) ===
+-- === TYPING LOGIC ===
 local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
@@ -599,7 +598,6 @@ local function typeWordMobile(word, targetPrompt)
         return
     end
 
-    -- 🛡️ ПРОВЕРКА НА ЧАТ
     if UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= getGameTextBox() then
         print("💬 [DEBUG - Chat Protect]: Player is using Chat! Aborting auto-type.")
         isTyping = false
@@ -753,7 +751,7 @@ local function getRareScore(word)
     return score
 end
 
--- === WORD SEARCH LOGIC WITH ARRAY STEAL PRIORITY & FIXED SESSION CHECK ===
+-- === WORD SEARCH LOGIC (ULTRA-FAST HYBRID INDEX SEARCH) ===
 local function copyword(bruteforce)
     local contains, isMyTurn = getGameStatus()
     local tbl = getInfoTable()
@@ -799,26 +797,27 @@ local function copyword(bruteforce)
         local isStolenPick = false
         local stolenEntry = nil
 
-        -- 1. ПРИОРИТЕТ 1: ПРОВЕРКА УКРАДЕННЫХ СЛОВ (ИЗ МАССИВА ОБЪЕКТОВ)
-        for i = 1, #stolenWords do
-            local entry = stolenWords[i]
-            local w = entry.word
-            if not entry.used and not sessionUsedWords[w] and #w <= lettercap and string_find(w, promptLower, 1, true) then
-                finalword = w
-                isStolenPick = true
-                stolenEntry = entry
-                break
-            end
-        end
+        local validCandidates = {}
+        local specialMatches = {}
+        local normalMatches = {}
 
-        -- 2. ПРИОРИТЕТ 2: ОБЫЧНЫЙ СЛОВАРЬ (ЕСЛИ УКРАДЕННЫХ СЛОВ НЕТ)
-        if not finalword then
-            local validCandidates = {}
-            local specialMatches = {}
-            local normalMatches = {}
-            
-            local candidates = PromptIndex[promptLower]
-            if candidates then
+        local candidates = PromptIndex[promptLower]
+        if candidates then
+            -- ⚡ 1. ИЩЕМ УКРАДЕННОЕ СЛОВО ВЖИВУЮ ЧЕРЕЗ PromptIndex И HASH-MAP (Занимает 0мс)
+            for i = 1, #candidates do
+                local cand = candidates[i]
+                local stolenData = stolenWordsMap[cand]
+                
+                if stolenData and not stolenData.used and not sessionUsedWords[cand] and #cand <= lettercap then
+                    finalword = cand
+                    isStolenPick = true
+                    stolenEntry = stolenData
+                    break
+                end
+            end
+
+            -- ⚡ 2. ЕСЛИ УКРАДЕННОГО СЛОВА НЕТ — СОБИРАЕМ ОБЫЧНЫЕ КАНДИДАТЫ
+            if not finalword then
                 for i = 1, #candidates do
                     local candidate = candidates[i]
                     if #candidate <= lettercap and not sessionUsedWords[candidate] then
@@ -831,51 +830,43 @@ local function copyword(bruteforce)
                     end
                 end
             end
+        end
 
-            if solutionsLabel then solutionsLabel:Set("Solutions Found: " .. #validCandidates) end
+        if solutionsLabel then solutionsLabel:Set("Solutions Found: " .. (finalword and 1 or #validCandidates)) end
 
-            if #validCandidates > 0 then
-                local currentMode = wordPriorityMode
-                if type(currentMode) == "table" then
-                    currentMode = wordPriorityMode[1]
+        -- ВЫБОР ИЗ ОБЫЧНОГО СЛОВАРА (ЕСЛИ НЕ БЫЛО УКРАДЕННОГО)
+        if not finalword and #validCandidates > 0 then
+            local currentMode = wordPriorityMode
+            if type(currentMode) == "table" then
+                currentMode = wordPriorityMode[1]
+            end
+
+            if currentMode == "Rare Words" then
+                local bestWord = validCandidates[1]
+                local maxScore = -1
+                
+                for i = 1, #validCandidates do
+                    local cand = validCandidates[i]
+                    local score = getRareScore(cand)
+                    if score > maxScore then
+                        maxScore = score
+                        bestWord = cand
+                    end
                 end
+                finalword = bestWord
 
-                if currentMode == "Rare Words" then
-                    local bestWord = validCandidates[1]
-                    local maxScore = -1
-                    
-                    for i = 1, #validCandidates do
-                        local cand = validCandidates[i]
-                        local score = getRareScore(cand)
-                        if score > maxScore then
-                            maxScore = score
-                            bestWord = cand
+            elseif currentMode == "Hyphenated / Short" or currentMode == "Hyphenated/short" then
+                if #specialMatches > 0 then
+                    finalword = specialMatches[math_random(1, #specialMatches)]
+                elseif #normalMatches > 0 then
+                    local shortest = normalMatches[1]
+                    for i = 2, #normalMatches do
+                        if #normalMatches[i] < #shortest then
+                            shortest = normalMatches[i]
                         end
                     end
-                    finalword = bestWord
-
-                elseif currentMode == "Hyphenated / Short" or currentMode == "Hyphenated/short" then
-                    if #specialMatches > 0 then
-                        finalword = specialMatches[math_random(1, #specialMatches)]
-                    elseif #normalMatches > 0 then
-                        local shortest = normalMatches[1]
-                        for i = 2, #normalMatches do
-                            if #normalMatches[i] < #shortest then
-                                shortest = normalMatches[i]
-                            end
-                        end
-                        finalword = shortest
-                    else
-                        local shortest = validCandidates[1]
-                        for i = 2, #validCandidates do
-                            if #validCandidates[i] < #shortest then
-                                shortest = validCandidates[i]
-                            end
-                        end
-                        finalword = shortest
-                    end
-
-                elseif currentMode == "Shortest" then
+                    finalword = shortest
+                else
                     local shortest = validCandidates[1]
                     for i = 2, #validCandidates do
                         if #validCandidates[i] < #shortest then
@@ -883,21 +874,30 @@ local function copyword(bruteforce)
                         end
                     end
                     finalword = shortest
-
-                elseif currentMode == "Longest" then
-                    local longest = validCandidates[1]
-                    for i = 2, #validCandidates do
-                        if #validCandidates[i] > #longest then
-                            longest = validCandidates[i]
-                        end
-                    end
-                    finalword = longest
-
-                elseif currentMode == "Random" then
-                    finalword = validCandidates[math_random(1, #validCandidates)]
-                else
-                    finalword = validCandidates[math_random(1, #validCandidates)]
                 end
+
+            elseif currentMode == "Shortest" then
+                local shortest = validCandidates[1]
+                for i = 2, #validCandidates do
+                    if #validCandidates[i] < #shortest then
+                        shortest = validCandidates[i]
+                    end
+                end
+                finalword = shortest
+
+            elseif currentMode == "Longest" then
+                local longest = validCandidates[1]
+                for i = 2, #validCandidates do
+                    if #validCandidates[i] > #longest then
+                        longest = validCandidates[i]
+                    end
+                end
+                finalword = longest
+
+            elseif currentMode == "Random" then
+                finalword = validCandidates[math_random(1, #validCandidates)]
+            else
+                finalword = validCandidates[math_random(1, #validCandidates)]
             end
         end
 
@@ -951,9 +951,6 @@ MainTab:CreateToggle({
                   if currentPrompt == nil or currentPrompt:lower():find("waiting") then
                       waitingCounter = waitingCounter + 1
                       if waitingCounter >= 6 then
-                          if activeUpdateFn ~= nil then
-                              print("⏳ [DEBUG - GC]: Force clearing cached updateInfoFrame due to timeout.")
-                          end
                           activeUpdateFn = nil 
                           waitingCounter = 0
                       end
