@@ -255,7 +255,7 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === HIGH-PERFORMANCE STEAL SYSTEM (WITH DEBUG PRINT) ===
+-- === HIGH-PERFORMANCE STEAL SYSTEM (FIXED INDEXES) ===
 local Network = ReplicatedStorage:FindFirstChild("Network")
 if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
@@ -268,41 +268,25 @@ if Network then
 
         gameEvent.OnClientEvent:Connect(function(...)
             local args = {...}
-            
-            -- 🔍 ДОБАВЛЕННЫЙ ПРИНТ ДЛЯ ОТЛАДКИ АРГУМЕНТОВ
-            print("typingevent:", unpack(args))
 
-            local isTypingEvent = false
-            local eventPlayerId = nil
-            local typedString = nil
-
-            for i = 1, #args do
-                local arg = args[i]
-                if type(arg) == "string" and arg:lower() == "typingevent" then
-                    isTypingEvent = true
-                elseif type(arg) == "number" and not eventPlayerId then
-                    eventPlayerId = arg
-                end
-            end
+            -- Проверяем, является ли ивент TypingEvent (args[2])
+            local isTypingEvent = (type(args[2]) == "string" and args[2]:lower() == "typingevent")
 
             if isTypingEvent then
-                for i = 1, #args do
-                    local arg = args[i]
-                    if type(arg) == "string" then
-                        local lowerArg = arg:lower()
-                        if not systemStrings[lowerArg] and not lowerArg:find("abcdefg") then
-                            typedString = lowerArg
-                        end
-                    end
-                end
+                -- args[3] = UserId игрока
+                -- args[4] = Введенная строка
+                local eventPlayerId = tonumber(args[3])
+                local typedString = type(args[4]) == "string" and args[4]:lower() or nil
 
-                if eventPlayerId and typedString then
+                -- Проверяем, что строка — это именно слово, а не системный мусор
+                if eventPlayerId and typedString and not systemStrings[typedString] and not typedString:find("abcdefg") then
                     typingBuffers[eventPlayerId] = {
                         word = typedString,
                         lastUpdate = os_clock()
                     }
                 end
             else
+                -- Обработка смены хода / передачи бомбы (ChangePossessor)
                 for i = 1, #args do
                     if type(args[i]) == "string" and args[i]:lower() == "changepossessor" then
                         local myUserId = Players.LocalPlayer and Players.LocalPlayer.UserId
@@ -313,7 +297,7 @@ if Network then
                                 seenPlayerWords[word] = true
 
                                 if pid ~= myUserId then
-                                    -- Проверяем валидность и сохраняем в O(1) хэш-таблицу
+                                    -- Проверяем валидность слова по словарю
                                     if isWordInDictionary(word) then
                                         if not stolenWordsMap[word] then
                                             local pName = getPlayerNameFromId(pid)
@@ -803,7 +787,7 @@ local function copyword(bruteforce)
 
         local candidates = PromptIndex[promptLower]
         if candidates then
-            -- ⚡ 1. ИЩЕМ УКРАДЕННОЕ СЛОВО ВЖИВУЮ ЧЕРЕЗ PromptIndex И HASH-MAP (Занимает 0мс)
+            -- ⚡ 1. ИЩЕМ УКРАДЕННОЕ СЛОВО ВЖИВУЮ ЧЕРЕЗ PromptIndex И HASH-MAP
             for i = 1, #candidates do
                 local cand = candidates[i]
                 local stolenData = stolenWordsMap[cand]
