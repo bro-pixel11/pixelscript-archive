@@ -30,24 +30,53 @@ local Vim = game:GetService("VirtualInputManager")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
--- === NEW RENDER HWID & KEY AUTHENTICATION ===
+-- === NEW RENDER HWID & KEY AUTHENTICATION (FIXED) ===
 local API_URL = "https://roblox-key-api-zxnv.onrender.com/verify"
-local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
+local userProvidedKey = getgenv().PixelKey or _G.PixelKey or (type(PixelKey) == "string" and PixelKey or nil)
 
 if not userProvidedKey or userProvidedKey == "" then
     Players.LocalPlayer:Kick("❌ [Bro-Pixel Auth]: Key not found! Set getgenv().PixelKey = 'YOUR_KEY' before execution.")
     return
 end
 
-local function checkKey(userKey)
-    local rawHwid = gethwid and gethwid() or (game:GetService("RbxAnalyticsService"):GetClientId())
-    local requestUrl = string.format("%s?key=%s&hwid=%s", API_URL, tostring(userKey), tostring(rawHwid))
-    
+local function safeHttpGet(url)
+    -- Пробуем стандартный HttpGet
     local success, response = pcall(function()
-        return game:HttpGet(requestUrl)
+        return game:HttpGet(url)
     end)
+    if success and response then return response end
+
+    -- Запасной вариант через http_request / request (для мобильных экзекуторов)
+    local req = (syn and syn.request) or (http and http.request) or request or http_request
+    if req then
+        local res = req({ Url = url, Method = "GET" })
+        if res and res.Body then return res.Body end
+    end
+
+    return nil
+end
+
+local function getSafeHwid()
+    if gethwid then 
+        local ok, id = pcall(gethwid)
+        if ok and id then return id end
+    end
     
-    if success and response then
+    local ok, clientId = pcall(function()
+        return game:GetService("RbxAnalyticsService"):GetClientId()
+    end)
+    if ok and clientId then return clientId end
+
+    return tostring(Players.LocalPlayer.UserId)
+end
+
+local function checkKey(userKey)
+    local rawHwid = getSafeHwid()
+    local requestUrl = string.format("%s?key=%s&hwid=%s", API_URL, HttpService:UrlEncode(tostring(userKey)), HttpService:UrlEncode(tostring(rawHwid)))
+    
+    local response = safeHttpGet(requestUrl)
+    
+    if response then
         local ok, data = pcall(function()
             return HttpService:JSONDecode(response)
         end)
@@ -75,6 +104,7 @@ if not isAuthenticated then
 end
 
 print("✅ [Bro-Pixel Auth]: Authorization successful: " .. tostring(authMessage))
+
 
 -- === MAIN SCRIPT ===
 
