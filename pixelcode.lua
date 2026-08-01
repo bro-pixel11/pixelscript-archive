@@ -21,8 +21,8 @@ local tonumber = tonumber
 local ipairs = ipairs
 local pairs = pairs
 local getgc = getgc
-local debug_getinfo = debug.getinfo
-local debug_getupvalues = debug.getupvalues
+local debug_getinfo = debug_getinfo
+local debug_getupvalues = debug_getupvalues
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -185,10 +185,11 @@ end
 loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt")
 
 -- === STATE & SETTINGS ===
-local sessionUsedWords = {}  -- Исключительно слова, напечатанные LocalPlayer
-local seenPlayerWords = {}   -- Чужие слова, замеченные на сервере
-local stolenWordsMap = {}    -- Хэш-таблица украденных слов: [word] = { playerName = "...", used = false }
-local typingBuffers = {}    -- Персональные буферы: [playerId] = { word = "...", lastUpdate = ... }
+local sessionUsedWords = {}       -- Исключительно слова, напечатанные LocalPlayer
+local seenPlayerWords = {}        -- Чужие слова, замеченные в ТЕКУЩЕМ раунде
+local stolenWordsMap = {}         -- Доступные украденные слова ДЛЯ ТЕКУЩЕГО РАУНДА (перенесенные из прошлых)
+local stolenForNextRounds = {}   -- Буфер под украденные слова, которые пригодятся В СЛЕДУЮЩИХ играх
+local typingBuffers = {}         -- Персональные буферы: [playerId] = { word = "...", lastUpdate = ... }
 local playerCache = {}
 
 local lettercap = math_huge
@@ -255,7 +256,7 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === HIGH-PERFORMANCE STEAL SYSTEM (FIXED INDEXES) ===
+-- === HIGH-PERFORMANCE STEAL SYSTEM (NEXT ROUND LOGIC) ===
 local Network = ReplicatedStorage:FindFirstChild("Network")
 if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
@@ -269,16 +270,12 @@ if Network then
         gameEvent.OnClientEvent:Connect(function(...)
             local args = {...}
 
-            -- Проверяем, является ли ивент TypingEvent (args[2])
             local isTypingEvent = (type(args[2]) == "string" and args[2]:lower() == "typingevent")
 
             if isTypingEvent then
-                -- args[3] = UserId игрока
-                -- args[4] = Введенная строка
                 local eventPlayerId = tonumber(args[3])
                 local typedString = type(args[4]) == "string" and args[4]:lower() or nil
 
-                -- Проверяем, что строка — это именно слово, а не системный мусор
                 if eventPlayerId and typedString and not systemStrings[typedString] and not typedString:find("abcdefg") then
                     typingBuffers[eventPlayerId] = {
                         word = typedString,
@@ -297,18 +294,18 @@ if Network then
                                 seenPlayerWords[word] = true
 
                                 if pid ~= myUserId then
-                                    -- Проверяем валидность слова по словарю
                                     if isWordInDictionary(word) then
-                                        if not stolenWordsMap[word] then
+                                        -- Сохраняем во временный буфер ДЛЯ СЛЕДУЮЩИХ ИГР
+                                        if not stolenWordsMap[word] and not stolenForNextRounds[word] then
                                             local pName = getPlayerNameFromId(pid)
-                                            stolenWordsMap[word] = {
+                                            stolenForNextRounds[word] = {
                                                 playerName = pName,
                                                 used = false
                                             }
 
-                                            if stolenWordLabel then stolenWordLabel:Set("Stolen Word: " .. word) end
+                                            if stolenWordLabel then stolenWordLabel:Set("Stolen (For Next Game): " .. word) end
                                             if stolenFromLabel then stolenFromLabel:Set("From: " .. pName) end
-                                            print("🥷 [STEAL]: Stolen valid word '" .. word .. "' from " .. pName)
+                                            print("🥷 [STEAL SAVED]: Word '" .. word .. "' captured from " .. pName .. " (queued for future rounds)")
                                         end
                                     else
                                         print("⚠️ [STEAL IGNORED]: Word '" .. word .. "' not found in dictionary.")
@@ -365,7 +362,7 @@ local function isFnAlive(fn)
                     alive = true
                 end
             end
-        end
+        end)
     end)
     return alive
 end
@@ -446,9 +443,17 @@ local function resetRoundState()
     activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
     
+    -- Переносим накопленные украденные слова в активный пул для нового раунда
+    for w, data in pairs(stolenForNextRounds) do
+        if not stolenWordsMap[w] then
+            stolenWordsMap[w] = data
+        end
+    end
+    table_clear(stolenForNextRounds)
+
+    -- Очищаем слова, использованные в прошлых играх
     table_clear(sessionUsedWords)
     table_clear(seenPlayerWords)
-    table_clear(stolenWordsMap)
     table_clear(typingBuffers)
     table_clear(playerCache)
     
@@ -787,12 +792,12 @@ local function copyword(bruteforce)
 
         local candidates = PromptIndex[promptLower]
         if candidates then
-            -- ⚡ 1. ИЩЕМ УКРАДЕННОЕ СЛОВО ВЖИВУЮ ЧЕРЕЗ PromptIndex И HASH-MAP
+            -- ⚡ 1. ИЩЕМ УКРАДЕННОЕ СЛОВО (ТОЛЬКО ИЗ ПРОШЛЫХ РАУНДОВ И НЕ НАПЕЧАТАННОЕ В ЭТОМ)
             for i = 1, #candidates do
                 local cand = candidates[i]
                 local stolenData = stolenWordsMap[cand]
                 
-                if stolenData and not stolenData.used and not sessionUsedWords[cand] and #cand <= lettercap then
+                if stolenData and not stolenData.used and not sessionUsedWords[cand] and not seenPlayerWords[cand] and #cand <= lettercap then
                     finalword = cand
                     isStolenPick = true
                     stolenEntry = stolenData
@@ -804,7 +809,7 @@ local function copyword(bruteforce)
             if not finalword then
                 for i = 1, #candidates do
                     local candidate = candidates[i]
-                    if #candidate <= lettercap and not sessionUsedWords[candidate] then
+                    if #candidate <= lettercap and not sessionUsedWords[candidate] and not seenPlayerWords[candidate] then
                         table_insert(validCandidates, candidate)
                         if string_find(candidate, "-", 1, true) or string_find(candidate, "'", 1, true) then
                             table_insert(specialMatches, candidate)
@@ -891,7 +896,7 @@ local function copyword(bruteforce)
             
             if isStolenPick and stolenEntry then
                 stolenEntry.used = true
-                if usedWordLabel then usedWordLabel:Set("Used Word: " .. finalword) end
+                if usedWordLabel then usedWordLabel:Set("Used Stolen Word: " .. finalword) end
                 if usedFromLabel then usedFromLabel:Set("From: " .. tostring(stolenEntry.playerName)) end
                 print("🥷 [STEAL]: Used stolen word '" .. finalword .. "' originally by " .. tostring(stolenEntry.playerName))
             end
