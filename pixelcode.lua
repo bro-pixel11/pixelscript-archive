@@ -20,6 +20,7 @@ local tostring = tostring
 local tonumber = tonumber
 local ipairs = ipairs
 local pairs = pairs
+local next = next
 local getgc = getgc
 local debug_getinfo = debug_getinfo
 local debug_getupvalues = debug_getupvalues
@@ -40,13 +41,11 @@ if not userProvidedKey or userProvidedKey == "" then
 end
 
 local function safeHttpGet(url)
-    -- Пробуем стандартный HttpGet
     local success, response = pcall(function()
         return game:HttpGet(url)
     end)
     if success and response then return response end
 
-    -- Запасной вариант через http_request / request (для мобильных экзекуторов)
     local req = (syn and syn.request) or (http and http.request) or request or http_request
     if req then
         local res = req({ Url = url, Method = "GET" })
@@ -105,7 +104,6 @@ end
 
 print("✅ [Bro-Pixel Auth]: Authorization successful: " .. tostring(authMessage))
 
-
 -- === MAIN SCRIPT ===
 
 getgenv().deletewhendupefound = true
@@ -114,6 +112,40 @@ local elapsedLabel, turnsLabel, promptLabel, solutionsLabel, matchLabel, fusionL
 
 -- UI Labels for Stealing Tab
 local stolenWordLabel, stolenFromLabel, usedWordLabel, usedFromLabel
+local lastStolenText, lastStolenFromText, lastUsedText, lastUsedFromText = "", "", "", ""
+
+-- === CACHED UI UPDATERS (ПРЕДОТВРАЩАЕТ ЛИШНИЕ ВЫЗОВЫ LABEL:SET) ===
+local function updateStolenWordUI(word)
+    local text = "Stolen (For Next Game): " .. word
+    if text ~= lastStolenText and stolenWordLabel then
+        lastStolenText = text
+        stolenWordLabel:Set(text)
+    end
+end
+
+local function updateStolenFromUI(pName)
+    local text = "From: " .. pName
+    if text ~= lastStolenFromText and stolenFromLabel then
+        lastStolenFromText = text
+        stolenFromLabel:Set(text)
+    end
+end
+
+local function updateUsedWordUI(word)
+    local text = "Used Stolen Word: " .. word
+    if text ~= lastUsedText and usedWordLabel then
+        lastUsedText = text
+        usedWordLabel:Set(text)
+    end
+end
+
+local function updateUsedFromUI(pName)
+    local text = "From: " .. tostring(pName)
+    if text ~= lastUsedFromText and usedFromLabel then
+        lastUsedFromText = text
+        usedFromLabel:Set(text)
+    end
+end
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
@@ -149,12 +181,7 @@ local statusLabel = MainTab:CreateLabel("Loading and indexing dictionary...")
 
 local globalWordsList = {} 
 local PromptIndex = {}
-local DictHashSet = {} -- [FIX]: Хэш-сет для мгновенной проверки O(1)
-
--- Быстрая проверка слова на наличие в словаре O(1)
-local function isWordInDictionary(word)
-    return DictHashSet[word] == true
-end
+local DictHashSet = {}
 
 local function loadDictionaryAsync(url)
     task_spawn(function()
@@ -174,7 +201,7 @@ local function loadDictionaryAsync(url)
             if wordLen >= 2 then
                 total = total + 1
                 table_insert(globalWordsList, word)
-                DictHashSet[word] = true -- [FIX]: Сохраняем в O(1) хэш-сет
+                DictHashSet[word] = true
                 
                 table_clear(seenSubstrings)
 
@@ -207,11 +234,11 @@ end
 loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt")
 
 -- === STATE & SETTINGS ===
-local sessionUsedWords = {}       -- Исключительно слова, напечатанные LocalPlayer
-local seenPlayerWords = {}        -- Чужие слова, замеченные в ТЕКУЩЕМ раунде
-local stolenWordsMap = {}         -- Доступные украденные слова ДЛЯ ТЕКУЩЕГО РАУНДА (перенесенные из прошлых)
-local stolenForNextRounds = {}   -- Буфер под украденные слова, которые пригодятся В СЛЕДУЮЩИХ играх
-local typingBuffers = {}         -- Персональные буферы: [playerId] = { word = "..." }
+local sessionUsedWords = {}
+local seenPlayerWords = {}
+local stolenWordsMap = {}
+local stolenForNextRounds = {}
+local typingBuffers = {}
 local playerCache = {}
 
 local lettercap = math_huge
@@ -278,15 +305,46 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === HIGH-PERFORMANCE STEAL SYSTEM (OPTIMIZED O(1)) ===
+-- === ULTRA-LEAN STEAL SYSTEM (ZERO ALLOCATION & ASYNC QUEUE) ===
 local Network = ReplicatedStorage:FindFirstChild("Network")
 if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
     if gameEvent then
+        local stealQueue = {}
+
+        -- Фоновый поток обработки кражи слов (не тормозит сетевой поток)
+        task_spawn(function()
+            while true do
+                if #stealQueue > 0 then
+                    local batch = table.remove(stealQueue, 1)
+                    local myUserId = Players.LocalPlayer and Players.LocalPlayer.UserId
+
+                    for pid, word in next, batch do
+                        seenPlayerWords[word] = true
+
+                        if pid ~= myUserId and DictHashSet[word] then
+                            if not stolenWordsMap[word] and not stolenForNextRounds[word] then
+                                local pName = getPlayerNameFromId(pid)
+                                stolenForNextRounds[word] = {
+                                    playerName = pName,
+                                    used = false
+                                }
+
+                                updateStolenWordUI(word)
+                                updateStolenFromUI(pName)
+                            end
+                        end
+                    end
+                else
+                    task_wait(0.1)
+                end
+            end
+        end)
+
         gameEvent.OnClientEvent:Connect(function(...)
             local arg1, arg2, arg3, arg4 = ...
 
-            -- 1. Быстрый фильтр TypingEvent (без лишних вызовов string:lower и создания таблиц)
+            -- 1. Быстрый фильтр TypingEvent (без пересоздания таблиц)
             if arg2 == "typingevent" or arg2 == "TypingEvent" then
                 local eventPlayerId = tonumber(arg3)
                 if eventPlayerId and type(arg4) == "string" and #arg4 > 1 then
@@ -300,34 +358,18 @@ if Network then
                 return
             end
 
-            -- 2. Обработка смены хода / передачи бомбы (ChangePossessor)
+            -- 2. Смена хода / передачи бомбы: моментальный snapshot без задержек
             if arg2 == "changepossessor" or arg2 == "ChangePossessor" or arg1 == "changepossessor" then
-                local myUserId = Players.LocalPlayer and Players.LocalPlayer.UserId
-
-                for pid, bufData in pairs(typingBuffers) do
-                    local word = bufData.word
-                    if word and #word > 1 then
-                        seenPlayerWords[word] = true
-
-                        if pid ~= myUserId then
-                            -- O(1) мгновенная проверка через DictHashSet
-                            if DictHashSet[word] then
-                                if not stolenWordsMap[word] and not stolenForNextRounds[word] then
-                                    local pName = getPlayerNameFromId(pid)
-                                    stolenForNextRounds[word] = {
-                                        playerName = pName,
-                                        used = false
-                                    }
-
-                                    if stolenWordLabel then stolenWordLabel:Set("Stolen (For Next Game): " .. word) end
-                                    if stolenFromLabel then stolenFromLabel:Set("From: " .. pName) end
-                                end
-                            end
+                if next(typingBuffers) ~= nil then
+                    local snapshot = {}
+                    for pid, bufData in next, typingBuffers do
+                        if bufData.word and #bufData.word > 1 then
+                            snapshot[pid] = bufData.word
+                            bufData.word = nil -- Сброс буфера без удаления структуры
                         end
                     end
+                    table_insert(stealQueue, snapshot)
                 end
-
-                table_clear(typingBuffers)
             end
         end)
     end
@@ -453,7 +495,7 @@ local function resetRoundState()
     activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
     
-    -- Переносим накопленные украденные слова в активный пул для нового раунда
+    -- Переносим украденные слова в активный пул
     for w, data in pairs(stolenForNextRounds) do
         if not stolenWordsMap[w] then
             stolenWordsMap[w] = data
@@ -461,7 +503,7 @@ local function resetRoundState()
     end
     table_clear(stolenForNextRounds)
 
-    -- Очищаем слова, использованные в прошлых играх
+    -- Глубокая очистка таблиц без пересоздания ссылок
     table_clear(sessionUsedWords)
     table_clear(seenPlayerWords)
     table_clear(typingBuffers)
@@ -472,10 +514,6 @@ local function resetRoundState()
     wasMyTurn = false
     isTyping = false
     isSubmitting = false
-    
-    pcall(function()
-        collectgarbage("collect")
-    end)
 
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
@@ -579,8 +617,6 @@ local function typeWordMobile(word, targetPrompt)
     typingSessionId = typingSessionId + 1
     local currentSession = typingSessionId
 
-    print("⌨️ [DEBUG - Type]: Starting typing process for word: " .. tostring(word))
-
     if not instanttype then 
         if useFuseProgress then
             waitFuseProgress(currentSession)
@@ -591,14 +627,12 @@ local function typeWordMobile(word, targetPrompt)
     end
     
     if currentSession ~= typingSessionId then
-        print("⚠️ [DEBUG - Type]: Session changed mid-delay, canceling type.")
         isTyping = false
         isSubmitting = false
         return
     end
 
     if UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= getGameTextBox() then
-        print("💬 [DEBUG - Chat Protect]: Player is using Chat! Aborting auto-type.")
         isTyping = false
         isSubmitting = false
         return
@@ -606,7 +640,6 @@ local function typeWordMobile(word, targetPrompt)
 
     local currentPrompt, isMyTurn = getGameStatus()
     if currentPrompt ~= targetPrompt or not isMyTurn then
-        print("⚠️ [DEBUG - Type]: Status changed before typing! Prompt: " .. tostring(currentPrompt) .. " | IsMyTurn: " .. tostring(isMyTurn))
         isTyping = false
         isSubmitting = false
         return
@@ -629,14 +662,12 @@ local function typeWordMobile(word, targetPrompt)
         end
         
         if UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= textBox then
-            print("💬 [DEBUG - Chat Protect]: Player focused chat during typing! Stopping.")
             interrupted = true
             break
         end
 
         local checkPrompt, checkTurn = getGameStatus()
         if checkPrompt ~= targetPrompt or not checkTurn then 
-            print("⚠️ [DEBUG - Type]: Turn lost during typing string.")
             interrupted = true
             break 
         end
@@ -653,13 +684,10 @@ local function typeWordMobile(word, targetPrompt)
                     Vim:SendKeyEvent(true, wrongKeyCode, false, game)
                     task_wait(0.01)
                     Vim:SendKeyEvent(false, wrongKeyCode, false, game)
-                    
                     task_wait(math_random(200, 400) / 1000)
-                    
                     Vim:SendKeyEvent(true, Enum.KeyCode.Backspace, false, game)
                     task_wait(0.01)
                     Vim:SendKeyEvent(false, Enum.KeyCode.Backspace, false, game)
-                    
                     task_wait(math_random(100, 250) / 1000)
                 end
             end
@@ -681,13 +709,11 @@ local function typeWordMobile(word, targetPrompt)
                 currentDelay = 0
             else
                 currentDelay = applyRngVariation(speedWordDelay)
-                
                 if jitterEnabled then
                     local currentJitter = applyRngVariation(jitterIntensity)
                     local randomOffset = (math_random() * 2 - 1) * currentJitter
                     currentDelay = currentDelay + randomOffset
                 end
-                
                 if currentDelay < 0.005 then currentDelay = 0.005 end
             end
             
@@ -713,7 +739,6 @@ local function typeWordMobile(word, targetPrompt)
             
             totalTurns = totalTurns + 1
             if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
-            print("✅ [DEBUG - Type]: Word successfully submitted: " .. tostring(word))
         else
             if textBox then textBox.Text = "" end
             isSubmitting = false
@@ -737,16 +762,13 @@ local letterWeights = {
 local function getRareScore(word)
     local score = 0
     local len = #word
-    
     for i = 1, len do
         local char = string_sub(word, i, i)
         score = score + (letterWeights[char] or 1)
     end
-    
     if len > 7 then
         score = score + ((len - 7) * 3)
     end
-    
     return score
 end
 
@@ -773,7 +795,6 @@ local function copyword(bruteforce)
     end
 
     if isTyping and contains ~= lastHandledPrompt then
-        print("🔄 [DEBUG - Search]: Prompt changed mid-type! Stopping typing session.")
         isTyping = false
         isSubmitting = false
     end
@@ -787,7 +808,6 @@ local function copyword(bruteforce)
     if contains ~= lastHandledPrompt or (lastFuseStart > 0 and currentFuseStart ~= lastFuseStart) or bruteforce then
         lastHandledPrompt = contains
         lastFuseStart = currentFuseStart
-        print("🎯 [DEBUG - Search]: New turn detected! Prompt: " .. tostring(contains))
         
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
 
@@ -802,7 +822,7 @@ local function copyword(bruteforce)
 
         local candidates = PromptIndex[promptLower]
         if candidates then
-            -- ⚡ 1. ИЩЕМ УКРАДЕННОЕ СЛОВО (ТОЛЬКО ИЗ ПРОШЛЫХ РАУНДОВ И НЕ НАПЕЧАТАННОЕ В ЭТОМ)
+            -- 1. Поиск украденного слова
             for i = 1, #candidates do
                 local cand = candidates[i]
                 local stolenData = stolenWordsMap[cand]
@@ -815,7 +835,7 @@ local function copyword(bruteforce)
                 end
             end
 
-            -- ⚡ 2. ЕСЛИ УКРАДЕННОГО СЛОВА НЕТ — СОБИРАЕМ ОБЫЧНЫЕ КАНДИДАТЫ
+            -- 2. Обычные кандидаты
             if not finalword then
                 for i = 1, #candidates do
                     local candidate = candidates[i]
@@ -833,17 +853,13 @@ local function copyword(bruteforce)
 
         if solutionsLabel then solutionsLabel:Set("Solutions Found: " .. (finalword and 1 or #validCandidates)) end
 
-        -- ВЫБОР ИЗ ОБЫЧНОГО СЛОВАРА (ЕСЛИ НЕ БЫЛО УКРАДЕННОГО)
         if not finalword and #validCandidates > 0 then
             local currentMode = wordPriorityMode
-            if type(currentMode) == "table" then
-                currentMode = wordPriorityMode[1]
-            end
+            if type(currentMode) == "table" then currentMode = wordPriorityMode[1] end
 
             if currentMode == "Rare Words" then
                 local bestWord = validCandidates[1]
                 local maxScore = -1
-                
                 for i = 1, #validCandidates do
                     local cand = validCandidates[i]
                     local score = getRareScore(cand)
@@ -860,17 +876,13 @@ local function copyword(bruteforce)
                 elseif #normalMatches > 0 then
                     local shortest = normalMatches[1]
                     for i = 2, #normalMatches do
-                        if #normalMatches[i] < #shortest then
-                            shortest = normalMatches[i]
-                        end
+                        if #normalMatches[i] < #shortest then shortest = normalMatches[i] end
                     end
                     finalword = shortest
                 else
                     local shortest = validCandidates[1]
                     for i = 2, #validCandidates do
-                        if #validCandidates[i] < #shortest then
-                            shortest = validCandidates[i]
-                        end
+                        if #validCandidates[i] < #shortest then shortest = validCandidates[i] end
                     end
                     finalword = shortest
                 end
@@ -878,18 +890,14 @@ local function copyword(bruteforce)
             elseif currentMode == "Shortest" then
                 local shortest = validCandidates[1]
                 for i = 2, #validCandidates do
-                    if #validCandidates[i] < #shortest then
-                        shortest = validCandidates[i]
-                    end
+                    if #validCandidates[i] < #shortest then shortest = validCandidates[i] end
                 end
                 finalword = shortest
 
             elseif currentMode == "Longest" then
                 local longest = validCandidates[1]
                 for i = 2, #validCandidates do
-                    if #validCandidates[i] > #longest then
-                        longest = validCandidates[i]
-                    end
+                    if #validCandidates[i] > #longest then longest = validCandidates[i] end
                 end
                 finalword = longest
 
@@ -900,19 +908,16 @@ local function copyword(bruteforce)
             end
         end
 
-        -- ВЫПОЛНЕНИЕ ОТПРАВКИ
         if finalword then
             sessionUsedWords[finalword] = true
             
             if isStolenPick and stolenEntry then
                 stolenEntry.used = true
-                if usedWordLabel then usedWordLabel:Set("Used Stolen Word: " .. finalword) end
-                if usedFromLabel then usedFromLabel:Set("From: " .. tostring(stolenEntry.playerName)) end
-                print("🥷 [STEAL]: Used stolen word '" .. finalword .. "' originally by " .. tostring(stolenEntry.playerName))
+                updateUsedWordUI(finalword)
+                updateUsedFromUI(stolenEntry.playerName)
             end
 
             if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
-            print("💡 [DEBUG - Search]: Picked word: " .. tostring(finalword) .. " (Stolen: " .. tostring(isStolenPick) .. ")")
             
             if autotype and isMyTurn then
                 task_spawn(function()
@@ -921,7 +926,6 @@ local function copyword(bruteforce)
             end
         else
             if matchLabel then matchLabel:Set("Current Match: Not Found") end
-            print("❌ [DEBUG - Search]: No available words found for prompt: " .. tostring(contains))
             lastHandledPrompt = ""
         end
     end
@@ -940,7 +944,6 @@ MainTab:CreateToggle({
    Callback = function(Value)
       autosearch = Value
       if autosearch then
-          print("▶️ [DEBUG]: Auto Search Enabled")
           task_spawn(function()
               local waitingCounter = 0
               while autosearch do 
@@ -959,7 +962,6 @@ MainTab:CreateToggle({
 
                   pcall(copyword) 
               end
-              print("⏹️ [DEBUG]: Auto Search Loop Ended")
           end)
       end
    end,
@@ -987,7 +989,6 @@ MainTab:CreateToggle({
                 if autoJoinDelay > 0 then task_wait(autoJoinDelay) end
                 resetRoundState()
                 pcall(function()
-                    print("🚪 [DEBUG - AutoJoin]: Attempting to join game...")
                     for i = -1, -20, -1 do 
                         Games.GameEvent:FireServer(i, "JoinGame") 
                     end
@@ -1082,9 +1083,7 @@ SettingsTab:CreateSlider({
    Increment = 5,
    Suffix = "%",
    CurrentValue = 0,
-   Callback = function(Value)
-      rngVariationPercent = Value
-   end,
+   Callback = function(Value) rngVariationPercent = Value end,
 })
 
 SettingsTab:CreateToggle({
@@ -1136,19 +1135,13 @@ if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
-            print("📩 [DEBUG - Network]: RegisterGame Event Fired for RoomID: " .. tostring(gameRoomID))
             resetRoundState()
-            
-            task.delay(1, function()
-                activeUpdateFn = nil
-            end)
+            task.delay(1, function() activeUpdateFn = nil end)
 
             if autojoin then 
                 task_spawn(function()
                     if autoJoinDelay > 0 then task_wait(autoJoinDelay) end
-                    pcall(function() 
-                        Games.GameEvent:FireServer(gameRoomID, "JoinGame") 
-                    end)
+                    pcall(function() Games.GameEvent:FireServer(gameRoomID, "JoinGame") end)
                 end)
             end
         end)
