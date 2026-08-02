@@ -1043,36 +1043,6 @@ if Games then
     end
 end
 
--- === ANTI-DUPE (UI FALLBACK) ===
-task_spawn(function()
-    while task_wait(0.8) do
-        if not autosearch then continue end
-        
-        local localPlayer = Players.LocalPlayer
-        local playerGui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
-        if not playerGui then continue end
-
-        local targetGui = playerGui:FindFirstChild("GameUI") or playerGui:FindFirstChild("DesktopUI") or playerGui:FindFirstChild("MobileUI")
-        
-        if targetGui then
-            for _, child in ipairs(targetGui:GetChildren()) do
-                if child:IsA("Frame") or child:IsA("ScrollingFrame") then
-                    for _, v in ipairs(child:GetChildren()) do
-                        if v:IsA("TextLabel") and v.Visible and #v.Text >= 2 then
-                            local text = v.Text:gsub("%s+", "")
-                            if text == text:upper() and not text:find("%d") and not text:find("TURN") and not text:find("ХОД") then
-                                local lowerWord = text:lower()
-                                if not sessionUsedWords[lowerWord] then
-                                    sessionUsedWords[lowerWord] = true
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
 
 -- === TIMER LOOP ===
 task_spawn(function()
