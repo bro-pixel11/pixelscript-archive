@@ -305,46 +305,17 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === ULTRA-LEAN STEAL SYSTEM (ZERO ALLOCATION & ASYNC QUEUE) ===
+-- === ULTRA-LEAN STEAL SYSTEM (ZERO ALLOCATION & O(1) EVENT-DRIVEN) ===
 local Network = ReplicatedStorage:FindFirstChild("Network")
 if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
     if gameEvent then
-        local stealQueue = {}
-
-        -- Фоновый поток обработки кражи слов (не тормозит сетевой поток)
-        task_spawn(function()
-            while true do
-                if #stealQueue > 0 then
-                    local batch = table.remove(stealQueue, 1)
-                    local myUserId = Players.LocalPlayer and Players.LocalPlayer.UserId
-
-                    for pid, word in next, batch do
-                        seenPlayerWords[word] = true
-
-                        if pid ~= myUserId and DictHashSet[word] then
-                            if not stolenWordsMap[word] and not stolenForNextRounds[word] then
-                                local pName = getPlayerNameFromId(pid)
-                                stolenForNextRounds[word] = {
-                                    playerName = pName,
-                                    used = false
-                                }
-
-                                updateStolenWordUI(word)
-                                updateStolenFromUI(pName)
-                            end
-                        end
-                    end
-                else
-                    task_wait(0.1)
-                end
-            end
-        end)
+        local myUserId = Players.LocalPlayer and Players.LocalPlayer.UserId
 
         gameEvent.OnClientEvent:Connect(function(...)
             local arg1, arg2, arg3, arg4 = ...
 
-            -- 1. Быстрый фильтр TypingEvent (без пересоздания таблиц)
+            -- 1. Буферизация введенных символов (O(1), без создания таблиц)
             if arg2 == "typingevent" or arg2 == "TypingEvent" then
                 local eventPlayerId = tonumber(arg3)
                 if eventPlayerId and type(arg4) == "string" and #arg4 > 1 then
@@ -358,22 +329,35 @@ if Network then
                 return
             end
 
-            -- 2. Смена хода / передачи бомбы: моментальный snapshot без задержек
+            -- 2. Обработка смены хода (O(1) на каждого игрока, без snapshot и без очереди)
             if arg2 == "changepossessor" or arg2 == "ChangePossessor" or arg1 == "changepossessor" then
-                if next(typingBuffers) ~= nil then
-                    local snapshot = {}
-                    for pid, bufData in next, typingBuffers do
-                        if bufData.word and #bufData.word > 1 then
-                            snapshot[pid] = bufData.word
-                            bufData.word = nil -- Сброс буфера без удаления структуры
+                for pid, buf in pairs(typingBuffers) do
+                    local word = buf.word
+                    if word then
+                        buf.word = nil -- Сброс буфера без пересоздания структуры
+
+                        seenPlayerWords[word] = true
+
+                        -- Проверяем возможность кражи только если это не наше слово и оно есть в словаре
+                        if pid ~= myUserId and DictHashSet[word] then
+                            if not stolenWordsMap[word] and not stolenForNextRounds[word] then
+                                local pName = getPlayerNameFromId(pid)
+                                stolenForNextRounds[word] = {
+                                    playerName = pName,
+                                    used = false
+                                }
+
+                                updateStolenWordUI(word)
+                                updateStolenFromUI(pName)
+                            end
                         end
                     end
-                    table_insert(stealQueue, snapshot)
                 end
             end
         end)
     end
 end
+
 
 -- === DYNAMIC GC FUNCTION SEARCH ===
 local activeUpdateFn = nil
