@@ -517,7 +517,8 @@ local function typeWordMobile(word, targetPrompt)
     end
 
     -- 🛡️ ПРОВЕРКА НА ЧАТ
-    if UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= getGameTextBox() then
+    local focusedBox = UserInputService:GetFocusedTextBox()
+    if focusedBox and focusedBox ~= getGameTextBox() then
         print("💬 [DEBUG - Chat Protect]: Player is using Chat! Aborting auto-type.")
         isTyping = false
         isSubmitting = false
@@ -548,7 +549,8 @@ local function typeWordMobile(word, targetPrompt)
             break 
         end
         
-        if UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= textBox then
+        local activeBox = UserInputService:GetFocusedTextBox()
+        if activeBox and activeBox ~= textBox then
             print("💬 [DEBUG - Chat Protect]: Player focused chat during typing! Stopping.")
             interrupted = true
             break
@@ -698,7 +700,8 @@ local function copyword(bruteforce)
         isSubmitting = false
     end
 
-    if isTyping or isSubmitting or (UserInputService:GetFocusedTextBox() and UserInputService:GetFocusedTextBox() ~= getGameTextBox()) then 
+    local focusedBox = UserInputService:GetFocusedTextBox()
+    if isTyping or isSubmitting or (focusedBox and focusedBox ~= getGameTextBox()) then 
         return 
     end
 
@@ -738,7 +741,7 @@ local function copyword(bruteforce)
         if #validCandidates > 0 then
             local currentMode = wordPriorityMode
             if type(currentMode) == "table" then
-                currentMode = currentOption[1] or currentMode[1]
+                currentMode = currentMode[1] or "Hyphenated / Short"
             end
 
             if currentMode == "Rare Words" then
@@ -1043,7 +1046,6 @@ if Games then
     end
 end
 
-
 -- === TIMER LOOP ===
 task_spawn(function()
     while task_wait(1) do
@@ -1058,62 +1060,60 @@ task_spawn(function()
 end)
 
 -- === AGGRESSIVE WAITING WATCHDOG ===
-task.spawn(function()
+task_spawn(function()
     local waitingSince = nil
 
-    while task.wait(1) do
+    while task_wait(1) do
         if not autosearch then
             waitingSince = nil
-            continue
-        end
-
-        local prompt = GetLetters()
-
-        if prompt and type(prompt) == "string" and prompt:lower():find("waiting") then
-            waitingSince = waitingSince or os.clock()
-
-            if os.clock() - waitingSince >= 30 then
-                print("⚠️ [WATCHDOG]: Waiting detected for 30 seconds. Performing full recovery...")
-
-                -- Останавливаем все текущие процессы
-                typingSessionId += 1
-                isTyping = false
-                isSubmitting = false
-
-                -- Сбрасываем кэш
-                activeUpdateFn = nil
-                lastHandledPrompt = ""
-                lastFuseStart = 0
-                wasMyTurn = false
-
-                -- Принудительная сборка мусора
-                pcall(function()
-                    collectgarbage("collect")
-                end)
-
-                -- Даём GC и игре обновиться
-                task.wait(0.5)
-
-                -- Сразу ищем новую updateInfoFrame
-                pcall(function()
-                    getActiveUpdateInfoFrame()
-                end)
-
-                -- Даём ей прогрузиться
-                task.wait(0.2)
-
-                -- Сразу запускаем поиск слова
-                pcall(function()
-                    copyword(true)
-                end)
-
-                waitingSince = nil
-
-                print("✅ [WATCHDOG]: Recovery finished.")
-            end
         else
-            waitingSince = nil
+            local prompt = GetLetters()
+
+            if prompt and type(prompt) == "string" and prompt:lower():find("waiting") then
+                waitingSince = waitingSince or os_clock()
+
+                if os_clock() - waitingSince >= 30 then
+                    print("⚠️ [WATCHDOG]: Waiting detected for 30 seconds. Performing full recovery...")
+
+                    -- Останавливаем все текущие процессы
+                    typingSessionId = typingSessionId + 1
+                    isTyping = false
+                    isSubmitting = false
+
+                    -- Сбрасываем кэш
+                    activeUpdateFn = nil
+                    lastHandledPrompt = ""
+                    lastFuseStart = 0
+                    wasMyTurn = false
+
+                    -- Принудительная сборка мусора
+                    pcall(function()
+                        collectgarbage("collect")
+                    end)
+
+                    -- Даём GC и игре обновиться
+                    task_wait(0.5)
+
+                    -- Сразу ищем новую updateInfoFrame
+                    pcall(function()
+                        getActiveUpdateInfoFrame()
+                    end)
+
+                    -- Даём ей прогрузиться
+                    task_wait(0.2)
+
+                    -- Сразу запускаем поиск слова
+                    pcall(function()
+                        copyword(true)
+                    end)
+
+                    waitingSince = nil
+
+                    print("✅ [WATCHDOG]: Recovery finished.")
+                end
+            else
+                waitingSince = nil
+            end
         end
     end
 end)
-
