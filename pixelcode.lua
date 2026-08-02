@@ -1056,3 +1056,64 @@ task_spawn(function()
         end
     end
 end)
+
+-- === AGGRESSIVE WAITING WATCHDOG ===
+task.spawn(function()
+    local waitingSince = nil
+
+    while task.wait(1) do
+        if not autosearch then
+            waitingSince = nil
+            continue
+        end
+
+        local prompt = GetLetters()
+
+        if prompt and type(prompt) == "string" and prompt:lower():find("waiting") then
+            waitingSince = waitingSince or os.clock()
+
+            if os.clock() - waitingSince >= 30 then
+                print("⚠️ [WATCHDOG]: Waiting detected for 30 seconds. Performing full recovery...")
+
+                -- Останавливаем все текущие процессы
+                typingSessionId += 1
+                isTyping = false
+                isSubmitting = false
+
+                -- Сбрасываем кэш
+                activeUpdateFn = nil
+                lastHandledPrompt = ""
+                lastFuseStart = 0
+                wasMyTurn = false
+
+                -- Принудительная сборка мусора
+                pcall(function()
+                    collectgarbage("collect")
+                end)
+
+                -- Даём GC и игре обновиться
+                task.wait(0.5)
+
+                -- Сразу ищем новую updateInfoFrame
+                pcall(function()
+                    getActiveUpdateInfoFrame()
+                end)
+
+                -- Даём ей прогрузиться
+                task.wait(0.2)
+
+                -- Сразу запускаем поиск слова
+                pcall(function()
+                    copyword(true)
+                end)
+
+                waitingSince = nil
+
+                print("✅ [WATCHDOG]: Recovery finished.")
+            end
+        else
+            waitingSince = nil
+        end
+    end
+end)
+
