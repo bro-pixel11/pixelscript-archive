@@ -149,20 +149,11 @@ local statusLabel = MainTab:CreateLabel("Loading and indexing dictionary...")
 
 local globalWordsList = {} 
 local PromptIndex = {}
+local DictHashSet = {} -- [FIX]: Хэш-сет для мгновенной проверки O(1)
 
--- Быстрая проверка слова на наличие в словаре
+-- Быстрая проверка слова на наличие в словаре O(1)
 local function isWordInDictionary(word)
-    if not word or #word < 2 then return false end
-    local sub = string_sub(word, 1, 2)
-    local list = PromptIndex[sub]
-    if list then
-        for i = 1, #list do
-            if list[i] == word then
-                return true
-            end
-        end
-    end
-    return false
+    return DictHashSet[word] == true
 end
 
 local function loadDictionaryAsync(url)
@@ -183,6 +174,7 @@ local function loadDictionaryAsync(url)
             if wordLen >= 2 then
                 total = total + 1
                 table_insert(globalWordsList, word)
+                DictHashSet[word] = true -- [FIX]: Сохраняем в O(1) хэш-сет
                 
                 table_clear(seenSubstrings)
 
@@ -219,7 +211,7 @@ local sessionUsedWords = {}       -- Исключительно слова, на
 local seenPlayerWords = {}        -- Чужие слова, замеченные в ТЕКУЩЕМ раунде
 local stolenWordsMap = {}         -- Доступные украденные слова ДЛЯ ТЕКУЩЕГО РАУНДА (перенесенные из прошлых)
 local stolenForNextRounds = {}   -- Буфер под украденные слова, которые пригодятся В СЛЕДУЮЩИХ играх
-local typingBuffers = {}         -- Персональные буферы: [playerId] = { word = "...", lastUpdate = ... }
+local typingBuffers = {}         -- Персональные буферы: [playerId] = { word = "..." }
 local playerCache = {}
 
 local lettercap = math_huge
@@ -286,68 +278,56 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === HIGH-PERFORMANCE STEAL SYSTEM (NEXT ROUND LOGIC) ===
+-- === HIGH-PERFORMANCE STEAL SYSTEM (OPTIMIZED O(1)) ===
 local Network = ReplicatedStorage:FindFirstChild("Network")
 if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
     if gameEvent then
-        local systemStrings = {
-            ["typingevent"] = true,
-            ["changepossessor"] = true,
-            ["english"] = true,
-        }
-
         gameEvent.OnClientEvent:Connect(function(...)
-            local args = {...}
+            local arg1, arg2, arg3, arg4 = ...
 
-            local isTypingEvent = (type(args[2]) == "string" and args[2]:lower() == "typingevent")
-
-            if isTypingEvent then
-                local eventPlayerId = tonumber(args[3])
-                local typedString = type(args[4]) == "string" and args[4]:lower() or nil
-
-                if eventPlayerId and typedString and not systemStrings[typedString] and not typedString:find("abcdefg") then
-                    typingBuffers[eventPlayerId] = {
-                        word = typedString,
-                        lastUpdate = os_clock()
-                    }
+            -- 1. Быстрый фильтр TypingEvent (без лишних вызовов string:lower и создания таблиц)
+            if arg2 == "typingevent" or arg2 == "TypingEvent" then
+                local eventPlayerId = tonumber(arg3)
+                if eventPlayerId and type(arg4) == "string" and #arg4 > 1 then
+                    local buf = typingBuffers[eventPlayerId]
+                    if not buf then
+                        buf = {}
+                        typingBuffers[eventPlayerId] = buf
+                    end
+                    buf.word = string_lower(arg4)
                 end
-            else
-                -- Обработка смены хода / передачи бомбы (ChangePossessor)
-                for i = 1, #args do
-                    if type(args[i]) == "string" and args[i]:lower() == "changepossessor" then
-                        local myUserId = Players.LocalPlayer and Players.LocalPlayer.UserId
+                return
+            end
 
-                        for pid, bufData in pairs(typingBuffers) do
-                            local word = bufData.word
-                            if word and #word > 1 then
-                                seenPlayerWords[word] = true
+            -- 2. Обработка смены хода / передачи бомбы (ChangePossessor)
+            if arg2 == "changepossessor" or arg2 == "ChangePossessor" or arg1 == "changepossessor" then
+                local myUserId = Players.LocalPlayer and Players.LocalPlayer.UserId
 
-                                if pid ~= myUserId then
-                                    if isWordInDictionary(word) then
-                                        -- Сохраняем во временный буфер ДЛЯ СЛЕДУЮЩИХ ИГР
-                                        if not stolenWordsMap[word] and not stolenForNextRounds[word] then
-                                            local pName = getPlayerNameFromId(pid)
-                                            stolenForNextRounds[word] = {
-                                                playerName = pName,
-                                                used = false
-                                            }
+                for pid, bufData in pairs(typingBuffers) do
+                    local word = bufData.word
+                    if word and #word > 1 then
+                        seenPlayerWords[word] = true
 
-                                            if stolenWordLabel then stolenWordLabel:Set("Stolen (For Next Game): " .. word) end
-                                            if stolenFromLabel then stolenFromLabel:Set("From: " .. pName) end
-                                            print("🥷 [STEAL SAVED]: Word '" .. word .. "' captured from " .. pName .. " (queued for future rounds)")
-                                        end
-                                    else
-                                        print("⚠️ [STEAL IGNORED]: Word '" .. word .. "' not found in dictionary.")
-                                    end
+                        if pid ~= myUserId then
+                            -- O(1) мгновенная проверка через DictHashSet
+                            if DictHashSet[word] then
+                                if not stolenWordsMap[word] and not stolenForNextRounds[word] then
+                                    local pName = getPlayerNameFromId(pid)
+                                    stolenForNextRounds[word] = {
+                                        playerName = pName,
+                                        used = false
+                                    }
+
+                                    if stolenWordLabel then stolenWordLabel:Set("Stolen (For Next Game): " .. word) end
+                                    if stolenFromLabel then stolenFromLabel:Set("From: " .. pName) end
                                 end
                             end
                         end
-
-                        table_clear(typingBuffers)
-                        break
                     end
                 end
+
+                table_clear(typingBuffers)
             end
         end)
     end
