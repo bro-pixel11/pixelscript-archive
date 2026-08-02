@@ -315,7 +315,6 @@ if Network then
         gameEvent.OnClientEvent:Connect(function(...)
             local arg1, arg2, arg3, arg4 = ...
 
-            -- 1. Запись введенных букв (O(1), без создания таблиц)
             if arg2 == "typingevent" or arg2 == "TypingEvent" then
                 local eventPlayerId = tonumber(arg3)
                 if eventPlayerId and type(arg4) == "string" and #arg4 > 1 then
@@ -329,13 +328,11 @@ if Network then
                 return
             end
 
-            -- 2. Смена хода (O(1) обработка, без queues, while true и snapshots)
             if arg2 == "changepossessor" or arg2 == "ChangePossessor" or arg1 == "changepossessor" then
                 for pid, buf in pairs(typingBuffers) do
                     local word = buf.word
                     if word then
-                        buf.word = nil -- Сброс буфера без пересоздания структуры
-
+                        buf.word = nil
                         seenPlayerWords[word] = true
 
                         if pid ~= myUserId and DictHashSet[word] then
@@ -345,7 +342,6 @@ if Network then
                                     playerName = pName,
                                     used = false
                                 }
-
                                 updateStolenWordUI(word)
                                 updateStolenFromUI(pName)
                             end
@@ -356,6 +352,7 @@ if Network then
         end)
     end
 end
+
 
 
 
@@ -409,16 +406,18 @@ local function getActiveUpdateInfoFrame()
     end
 
     activeUpdateFn = nil
-    for _, v in pairs(getgc()) do
+    local gcList = getgc()
+    for i = 1, #gcList do
+        local v = gcList[i]
         if isValidStructure(v) and isFnAlive(v) then
             activeUpdateFn = v
-            print("🔍 [DEBUG - GC]: Found new active updateInfoFrame function!")
             return v
         end
     end
     
     return nil
 end
+
 
 local function getInfoTable()
     local fn = getActiveUpdateInfoFrame()
