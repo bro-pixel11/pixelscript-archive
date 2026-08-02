@@ -305,7 +305,7 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === ULTRA-LEAN STEAL SYSTEM (ZERO ALLOCATION & O(1) EVENT-DRIVEN) ===
+-- === ZERO-CPU STEAL SYSTEM ===
 local Network = ReplicatedStorage:FindFirstChild("Network")
 if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
@@ -315,7 +315,7 @@ if Network then
         gameEvent.OnClientEvent:Connect(function(...)
             local arg1, arg2, arg3, arg4 = ...
 
-            -- 1. Буферизация введенных символов (O(1), без создания таблиц)
+            -- 1. Запись введенных букв (O(1), без создания таблиц)
             if arg2 == "typingevent" or arg2 == "TypingEvent" then
                 local eventPlayerId = tonumber(arg3)
                 if eventPlayerId and type(arg4) == "string" and #arg4 > 1 then
@@ -329,7 +329,7 @@ if Network then
                 return
             end
 
-            -- 2. Обработка смены хода (O(1) на каждого игрока, без snapshot и без очереди)
+            -- 2. Смена хода (O(1) обработка, без queues, while true и snapshots)
             if arg2 == "changepossessor" or arg2 == "ChangePossessor" or arg1 == "changepossessor" then
                 for pid, buf in pairs(typingBuffers) do
                     local word = buf.word
@@ -338,7 +338,6 @@ if Network then
 
                         seenPlayerWords[word] = true
 
-                        -- Проверяем возможность кражи только если это не наше слово и оно есть в словаре
                         if pid ~= myUserId and DictHashSet[word] then
                             if not stolenWordsMap[word] and not stolenForNextRounds[word] then
                                 local pName = getPlayerNameFromId(pid)
@@ -357,6 +356,7 @@ if Network then
         end)
     end
 end
+
 
 
 -- === DYNAMIC GC FUNCTION SEARCH ===
@@ -485,9 +485,9 @@ local function resetRoundState()
             stolenWordsMap[w] = data
         end
     end
-    table_clear(stolenForNextRounds)
 
-    -- Глубокая очистка таблиц без пересоздания ссылок
+    -- Очистка таблиц, чтобы Auto Search не лагал от забитой памяти
+    table_clear(stolenForNextRounds)
     table_clear(sessionUsedWords)
     table_clear(seenPlayerWords)
     table_clear(typingBuffers)
@@ -504,6 +504,7 @@ local function resetRoundState()
     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
     if fusionLabel then fusionLabel:Set("Fusion Progress: 0.00s / 0.00s") end
 end
+
 
 -- === CORE DATA GETTERS ===
 local function GetLetters()
