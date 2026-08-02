@@ -1,3 +1,8 @@
+print("loadstring", loadstring)
+print("getgc", getgc)
+print("debug_getinfo", debug_getinfo)
+print("debug_getupvalues", debug_getupvalues)
+print("getgenv", getgenv)
 -- === LOCALIZATION OF FREQUENTLY USED FUNCTIONS AND LIBRARIES ===
 local string_find = string.find
 local string_lower = string.lower
