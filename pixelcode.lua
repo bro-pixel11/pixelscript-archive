@@ -323,16 +323,26 @@ task.spawn(function()
         return str:match("^%s*(.-)%s*$") or ""
     end
 
+    local function extractWinner(cleaned)
+        if not cleaned or cleaned == "" then return nil end
+
+        -- Набор шаблонов для определения победителя
+        local winner = cleaned:match("(.-)%s+won the last game")
+            or cleaned:match("(.-)%s+won the game")
+            or cleaned:match("Winner:%s*(.+)")
+            or cleaned:match("(.-)%s+won!")
+
+        return winner
+    end
+
     local function processText(rawText)
         print("RAW TEXT:", rawText)
         if not rawText or rawText == "" then return end
-        
-        print("DEBUG Subtitle raw:", rawText)
 
         local cleaned = cleanText(rawText)
         if cleaned == "" or cleaned == lastProcessedText then return end
 
-        local winnerName = cleaned:match("(.-)%s+won the last game")
+        local winnerName = extractWinner(cleaned)
         if winnerName and winnerName ~= "" then
             lastProcessedText = cleaned
             print("🏆 [GUI WINNER]: Detected winner ->", winnerName)
@@ -342,26 +352,23 @@ task.spawn(function()
         end
     end
 
-    local function getSubtitleLabel()
+    local function findSubtitle()
         local player = Players.LocalPlayer
         if not player then return nil end
 
         local playerGui = player:FindFirstChild("PlayerGui")
         if not playerGui then return nil end
 
-        local gameUI = playerGui:FindFirstChild("GameUI")
-        if not gameUI then return nil end
-
-        local container = gameUI:FindFirstChild("Container")
-        local gameSpace = container and container:FindFirstChild("GameSpace")
-        local defaultUI = gameSpace and gameSpace:FindFirstChild("DefaultUI")
-        local infoSpace = defaultUI and defaultUI:FindFirstChild("Infospace")
-        
-        return infoSpace and infoSpace:FindFirstChild("Subtitle")
+        for _, obj in ipairs(playerGui:GetDescendants()) do
+            if obj:IsA("TextLabel") and obj.Name == "Subtitle" then
+                return obj
+            end
+        end
+        return nil
     end
 
     while true do
-        local subtitle = getSubtitleLabel()
+        local subtitle = findSubtitle()
         print("Subtitle object:", subtitle)
 
         if subtitle and subtitle:IsA("TextLabel") then
