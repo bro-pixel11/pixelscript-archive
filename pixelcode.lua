@@ -30,10 +30,6 @@ local Vim = game:GetService("VirtualInputManager")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
--- === EXPLOIT SPECIFIC FUNCTIONS ===
-local is_window_active = isrbxactive or iswindowactive or function() return true end
-local fire_signal = firesignal or function() end
-
 -- === NEW RENDER HWID & KEY AUTHENTICATION ===
 local API_URL = "https://roblox-key-api-zxnv.onrender.com/verify"
 local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
@@ -64,7 +60,7 @@ local function checkKey(userKey)
             end
         else
             if type(response) == "string" and (string_find(response, "<html") or string_find(response, "<head")) then
-                return false, "Сервер авторизации запускается. Пожалуйста, подождите 30-50 секунд и перезапустите скрипт."
+                return false, "Сервер ключей запускается (спящий режим Render). Подождите 30 секунд и перезапустите скрипт."
             end
             return false, "Invalid response structure from server!"
         end
@@ -174,7 +170,6 @@ local lettercap = math_huge
 local autosearch = false
 local autotype = false
 local instanttype = false
-local silentTyping = true -- По умолчанию включен тихий ввод
 local autojoin = false
 local autoJoinDelay = 2 
 local jitterEnabled = false 
@@ -269,7 +264,6 @@ local activeUpdateFn = nil
 
 local function isValidStructure(fn)
     if type(fn) ~= "function" then return false end
-    
     local isTargetName = false
     pcall(function()
         if debug_getinfo(fn).name == "updateInfoFrame" then
@@ -289,7 +283,6 @@ local function isValidStructure(fn)
             end
         end
     end)
-    
     return hasPrompt and hasPlayerID
 end
 
@@ -320,10 +313,7 @@ local function getActiveUpdateInfoFrame()
                 end
             end
         end)
-        
-        if not isStuck then
-            return activeUpdateFn
-        end
+        if not isStuck then return activeUpdateFn end
     end
 
     activeUpdateFn = nil
@@ -348,7 +338,6 @@ local function getActiveUpdateInfoFrame()
         
         if not string_find(promptText, "waiting") then
             activeUpdateFn = fn
-            print("🔍 [DEBUG - GC]: Успешно переключились на НОВУЮ функцию!")
             return fn
         end
     end
@@ -357,7 +346,6 @@ local function getActiveUpdateInfoFrame()
         activeUpdateFn = foundFns[#foundFns]
         return activeUpdateFn
     end
-    
     return nil
 end
 
@@ -379,24 +367,17 @@ end
 -- === FUSE DELAY LOGIC ===
 local function waitFuseProgress(targetSession)
     if not useFuseProgress then return end
-
     local tbl = getInfoTable()
-    
     if not tbl or not tbl.FuseStart or tbl.FuseStart <= 1000 or not tbl.FuseRate or tbl.FuseRate == 0 then
-        if checkWordDelay > 0 and not instanttype then
-            task.wait(applyRngVariation(checkWordDelay))
-        end
+        if checkWordDelay > 0 and not instanttype then task.wait(applyRngVariation(checkWordDelay)) end
         return
     end
 
     local fuseStart = tbl.FuseStart
     local fuseRate = tbl.FuseRate
-    
     local totalFuseTime = math.abs(1 / fuseRate)
-    
     local targetWaitSeconds = totalFuseTime * fusePercent
     targetWaitSeconds = math.max(0, targetWaitSeconds - 0.05)
-
     local localStart = os.clock()
 
     while typingSessionId == targetSession do
@@ -404,12 +385,8 @@ local function waitFuseProgress(targetSession)
         if not tblCurrent or tblCurrent.FuseStart ~= fuseStart then break end
 
         local elapsed = os.clock() - localStart
-
         currentFusionStats = string.format("%.2fs / %.2fs", math.min(elapsed, totalFuseTime), totalFuseTime)
-        if fusionLabel then 
-            fusionLabel:Set("Fusion Progress: " .. currentFusionStats) 
-        end
-
+        if fusionLabel then fusionLabel:Set("Fusion Progress: " .. currentFusionStats) end
         if elapsed >= targetWaitSeconds then break end
         
         task.wait(0.01)
@@ -418,7 +395,6 @@ end
 
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
-    print("🔄 [DEBUG - Game Reset]: Resetting Round State...")
     activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
     sessionUsedWords = {} 
@@ -428,10 +404,7 @@ local function resetRoundState()
     isTyping = false
     isSubmitting = false
     
-    pcall(function()
-        collectgarbage("collect")
-    end)
-
+    pcall(function() collectgarbage("collect") end)
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
@@ -449,9 +422,7 @@ local function GetLetters()
                 end
             end
         end)
-        if s and type(r) == "string" and r ~= "" and not r:lower():find("waiting") then 
-            return r 
-        end
+        if s and type(r) == "string" and r ~= "" and not r:lower():find("waiting") then return r end
     end
 
     local localPlayer = Players.LocalPlayer
@@ -465,7 +436,6 @@ local function GetLetters()
             end
         end
     end
-
     return nil
 end
 
@@ -511,7 +481,6 @@ local function getGameStatus()
             end
         end
     end
-
     return prompt, isMyTurn
 end
 
@@ -526,7 +495,7 @@ local function getGameTextBox()
     return nil
 end
 
--- === HYBRID TYPING LOGIC (SILENT & SAFE MODE) ===
+-- === MOBILE TYPING LOGIC (DELTA OPTIMIZED) ===
 local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
@@ -534,25 +503,20 @@ local function typeWordMobile(word, targetPrompt)
     typingSessionId = typingSessionId + 1
     local currentSession = typingSessionId
 
-    print("⌨️ [DEBUG - Type]: Starting typing process for word: " .. tostring(word))
-
     if not instanttype then 
         if useFuseProgress then
             waitFuseProgress(currentSession)
         elseif checkWordDelay > 0 then 
-            local finalDelay = applyRngVariation(checkWordDelay)
-            task_wait(finalDelay) 
+            task_wait(applyRngVariation(checkWordDelay)) 
         end
     end
     
     if currentSession ~= typingSessionId then
-        print("⚠️ [DEBUG - Type]: Session changed mid-delay, canceling type.")
         isTyping = false; isSubmitting = false; return
     end
 
     local currentPrompt, isMyTurn = getGameStatus()
     if currentPrompt ~= targetPrompt or not isMyTurn then
-        print("⚠️ [DEBUG - Type]: Status changed before typing!")
         isTyping = false; isSubmitting = false; return
     end
     
@@ -561,137 +525,73 @@ local function typeWordMobile(word, targetPrompt)
         isTyping = false; isSubmitting = false; return 
     end
 
-    -- ==============================
-    -- 🚀 РЕЖИМ: SILENT TYPING
-    -- ==============================
-    if silentTyping then
-        local currentText = ""
-        local interrupted = false
+    -- На мобилках (Delta) чат и защита работает иначе. Убраны конфликтующие ПК проверки окон.
+    local focusedBox = UserInputService:GetFocusedTextBox()
+    if focusedBox and focusedBox ~= textBox then
+        print("💬 [DEBUG - Chat Protect]: Чат активен! Отмена автотайпинга.")
+        isTyping = false; isSubmitting = false; return
+    end
+
+    textBox:CaptureFocus() 
+    task_wait(0.01)
+    textBox.Text = "" 
+    task_wait(0.01)
+    
+    local interrupted = false
+
+    for i = 1, #word do
+        if currentSession ~= typingSessionId then interrupted = true; break end
+
+        local activeBox = UserInputService:GetFocusedTextBox()
+        if activeBox and activeBox ~= textBox then interrupted = true; break end
+
+        local checkPrompt, checkTurn = getGameStatus()
+        if checkPrompt ~= targetPrompt or not checkTurn then interrupted = true; break end
         
-        for i = 1, #word do
-            if currentSession ~= typingSessionId then interrupted = true; break end
-            local checkPrompt, checkTurn = getGameStatus()
-            if checkPrompt ~= targetPrompt or not checkTurn then interrupted = true; break end
-            
-            currentText = currentText .. string_sub(word, i, i)
-            textBox.Text = currentText 
-            
+        local char = string_sub(word, i, i)
+        local keyCode = nil
+        if char == "-" then keyCode = Enum.KeyCode.Minus
+        elseif char == "'" then keyCode = Enum.KeyCode.Quote
+        else keyCode = Enum.KeyCode[char:upper()] end
+        
+        if keyCode then
             local currentDelay = speedWordDelay
-            if instanttype then
-                currentDelay = 0
+            if instanttype then currentDelay = 0
             else
                 currentDelay = applyRngVariation(speedWordDelay)
                 if jitterEnabled then
-                    local randomOffset = (math_random() * 2 - 1) * applyRngVariation(jitterIntensity)
-                    currentDelay = currentDelay + randomOffset
+                    currentDelay = currentDelay + ((math_random() * 2 - 1) * applyRngVariation(jitterIntensity))
                 end
                 if currentDelay < 0.005 then currentDelay = 0.005 end
             end
             
-            if currentDelay > 0 then task_wait(currentDelay) end
+            if i == 1 and textBox.Text ~= "" then textBox.Text = "" end
+            
+            Vim:SendKeyEvent(true, keyCode, false, game)
+            if currentDelay > 0 then task_wait(currentDelay / 2) end
+            Vim:SendKeyEvent(false, keyCode, false, game)
+            if currentDelay > 0 then task_wait(currentDelay / 2) end
         end
-        
-        if not interrupted and currentSession == typingSessionId then
-            local finalPrompt, finalTurn = getGameStatus()
-            if finalPrompt == targetPrompt and finalTurn then
-                isSubmitting = true 
-                
-                -- Незаметная отправка текста через firesignal
-                pcall(function()
-                    if fire_signal then
-                        fire_signal(textBox.FocusLost, true)
-                        fire_signal(textBox.ReturnPressed)
-                    end
-                end)
-                
-                totalTurns = totalTurns + 1
-                if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
-                print("✅ [DEBUG - Silent]: Word submitted in background: " .. tostring(word))
-            else
-                textBox.Text = ""
-                isSubmitting = false
-            end
+    end
+    
+    if not interrupted and currentSession == typingSessionId then
+        local finalPrompt, finalTurn = getGameStatus()
+        if finalPrompt == targetPrompt and finalTurn then
+            isSubmitting = true 
+            if not instanttype then task_wait(0.03) end
+            Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+            if not instanttype then task_wait(0.02) end
+            Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            
+            totalTurns = totalTurns + 1
+            if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
+            print("✅ [DEBUG - VIM Mobile]: Word successfully submitted: " .. tostring(word))
         else
+            textBox.Text = ""
             isSubmitting = false
         end
-
-    -- ==============================
-    -- 🛡️ РЕЖИМ: SAFE MODE (VIM)
-    -- ==============================
     else
-        if not is_window_active() then
-            print("⚠️ [DEBUG - Focus]: Window is not active! Pausing Safe Mode typing.")
-            isTyping = false; isSubmitting = false; return
-        end
-
-        local focusedBox = UserInputService:GetFocusedTextBox()
-        if focusedBox and focusedBox ~= textBox then
-            print("💬 [DEBUG - Chat Protect]: Chat active! Aborting Safe Mode auto-type.")
-            isTyping = false; isSubmitting = false; return
-        end
-
-        textBox:CaptureFocus() 
-        task_wait(0.01)
-        textBox.Text = "" 
-        task_wait(0.01)
-        
-        local interrupted = false
-
-        for i = 1, #word do
-            if currentSession ~= typingSessionId then interrupted = true; break end
-            if not is_window_active() then interrupted = true; break end
-
-            local activeBox = UserInputService:GetFocusedTextBox()
-            if activeBox and activeBox ~= textBox then interrupted = true; break end
-
-            local checkPrompt, checkTurn = getGameStatus()
-            if checkPrompt ~= targetPrompt or not checkTurn then interrupted = true; break end
-            
-            local char = string_sub(word, i, i)
-            local keyCode = nil
-            if char == "-" then keyCode = Enum.KeyCode.Minus
-            elseif char == "'" then keyCode = Enum.KeyCode.Quote
-            else keyCode = Enum.KeyCode[char:upper()] end
-            
-            if keyCode then
-                local currentDelay = speedWordDelay
-                if instanttype then currentDelay = 0
-                else
-                    currentDelay = applyRngVariation(speedWordDelay)
-                    if jitterEnabled then
-                        currentDelay = currentDelay + ((math_random() * 2 - 1) * applyRngVariation(jitterIntensity))
-                    end
-                    if currentDelay < 0.005 then currentDelay = 0.005 end
-                end
-                
-                if i == 1 and textBox.Text ~= "" then textBox.Text = "" end
-                
-                Vim:SendKeyEvent(true, keyCode, false, game)
-                if currentDelay > 0 then task_wait(currentDelay / 2) end
-                Vim:SendKeyEvent(false, keyCode, false, game)
-                if currentDelay > 0 then task_wait(currentDelay / 2) end
-            end
-        end
-        
-        if not interrupted and currentSession == typingSessionId then
-            local finalPrompt, finalTurn = getGameStatus()
-            if finalPrompt == targetPrompt and finalTurn then
-                isSubmitting = true 
-                if not instanttype then task_wait(0.02) end
-                Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-                if not instanttype then task_wait(0.01) end
-                Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-                
-                totalTurns = totalTurns + 1
-                if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
-                print("✅ [DEBUG - VIM]: Word successfully submitted: " .. tostring(word))
-            else
-                textBox.Text = ""
-                isSubmitting = false
-            end
-        else
-            isSubmitting = false
-        end
+        isSubmitting = false
     end
     
     if currentSession == typingSessionId then
@@ -739,21 +639,13 @@ local function copyword(bruteforce)
     end
 
     if isTyping and contains ~= lastHandledPrompt then
-        print("🔄 [DEBUG - Search]: Prompt changed mid-type! Stopping typing session.")
         isTyping = false
         isSubmitting = false
     end
 
-    -- В режиме Silent Typing нам плевать, если юзер пишет в чат
-    if not silentTyping then
-        local focusedBox = UserInputService:GetFocusedTextBox()
-        if isTyping or isSubmitting or (focusedBox and focusedBox ~= getGameTextBox()) then 
-            return 
-        end
-    else
-        if isTyping or isSubmitting then 
-            return 
-        end
+    local focusedBox = UserInputService:GetFocusedTextBox()
+    if isTyping or isSubmitting or (focusedBox and focusedBox ~= getGameTextBox()) then 
+        return 
     end
 
     wasMyTurn = true
@@ -761,7 +653,6 @@ local function copyword(bruteforce)
     if contains ~= lastHandledPrompt or (lastFuseStart > 0 and currentFuseStart ~= lastFuseStart) or bruteforce then
         lastHandledPrompt = contains
         lastFuseStart = currentFuseStart
-        print("🎯 [DEBUG - Search]: New turn detected! Prompt: " .. tostring(contains))
         
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
 
@@ -844,7 +735,6 @@ local function copyword(bruteforce)
         if finalword then
             sessionUsedWords[finalword] = true
             if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
-            print("💡 [DEBUG - Search]: Picked word: " .. tostring(finalword) .. " (Mode: " .. tostring(wordPriorityMode) .. ")")
             
             if autotype and isMyTurn then
                 task_spawn(function()
@@ -853,7 +743,6 @@ local function copyword(bruteforce)
             end
         else
             if matchLabel then matchLabel:Set("Current Match: Not Found") end
-            print("❌ [DEBUG - Search]: No available words found for prompt: " .. tostring(contains))
             lastHandledPrompt = ""
         end
     end
@@ -872,7 +761,6 @@ MainTab:CreateToggle({
    Callback = function(Value)
       autosearch = Value
       if autosearch then
-          print("▶️ [DEBUG]: Auto Search Enabled")
           task_spawn(function()
               local waitingCounter = 0
               while autosearch do 
@@ -895,7 +783,7 @@ MainTab:CreateToggle({
 })
 
 MainTab:CreateToggle({ 
-    Name = "Auto Type (Mobile)", 
+    Name = "Auto Type (Mobile VIM)", 
     CurrentValue = false, 
     Callback = function(Value) autotype = Value end 
 })
@@ -904,13 +792,6 @@ MainTab:CreateToggle({
     Name = "Instant Type (No Delay)", 
     CurrentValue = false, 
     Callback = function(Value) instanttype = Value end 
-})
-
-MainTab:CreateToggle({ 
-    Name = "Silent Typing (Background)", 
-    CurrentValue = true, 
-    Info = "Types directly without hijacking your keyboard.",
-    Callback = function(Value) silentTyping = Value end 
 })
 
 MainTab:CreateToggle({
@@ -1015,7 +896,6 @@ if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
-            print("📩 [DEBUG - Network]: RegisterGame Event Fired for RoomID: " .. tostring(gameRoomID))
             resetRoundState()
             task.delay(1, function() activeUpdateFn = nil end)
 
