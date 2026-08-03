@@ -30,6 +30,9 @@ local Vim = game:GetService("VirtualInputManager")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
+-- === EXPLOIT SPECIFIC FUNCTIONS ===
+local is_window_active = isrbxactive or iswindowactive or function() return true end
+
 -- === NEW RENDER HWID & KEY AUTHENTICATION ===
 local API_URL = "https://roblox-key-api-zxnv.onrender.com/verify"
 local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
@@ -59,6 +62,9 @@ local function checkKey(userKey)
                 return false, data.message or "Access Denied!"
             end
         else
+            if type(response) == "string" and (string_find(response, "<html") or string_find(response, "<head")) then
+                return false, "Сервер авторизации запускается. Пожалуйста, подождите 30-50 секунд и перезапустите скрипт."
+            end
             return false, "Invalid response structure from server!"
         end
     else
@@ -78,16 +84,13 @@ print("✅ [Bro-Pixel Auth]: Authorization successful: " .. tostring(authMessage
 
 -- === MAIN SCRIPT ===
 
-getgenv().deletewhendupefound = true
-
 local elapsedLabel, turnsLabel, promptLabel, solutionsLabel, matchLabel, fusionLabel
-local lastWonLabel, winstreakLabel
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 local Window = Rayfield:CreateWindow({
-    Name = "Bro-PixelScript (wordbomb)",
-    LoadingTitle = "Bro-Pixel Loader",
+    Name = "Bro-Pixel Hub",
+    LoadingTitle = "Premium Word Bomb Script",
     LoadingSubtitle = "by Bro-Pixel",
     Theme = "CustomTheme", 
 
@@ -100,64 +103,20 @@ local Window = Rayfield:CreateWindow({
    
     CustomTheme = {
         TextColor = Color3.fromRGB(255, 255, 255),
-        Background = Color3.fromRGB(25, 10, 40),        
-        MainColor = Color3.fromRGB(90, 30, 180),      
-        AccentColor = Color3.fromRGB(0, 240, 200),      
-        OutlineColor = Color3.fromRGB(140, 50, 255),    
-        PlaceholderColor = Color3.fromRGB(180, 150, 220)
+        Background = Color3.fromRGB(11, 14, 20),        
+        MainColor = Color3.fromRGB(26, 31, 43),      
+        AccentColor = Color3.fromRGB(139, 92, 255),      
+        OutlineColor = Color3.fromRGB(0, 217, 255),    
+        PlaceholderColor = Color3.fromRGB(139, 92, 255)
     }
 })
 
 local MainTab = Window:CreateTab("Main", nil)
 local DictionaryTab = Window:CreateTab("Dictionary", nil)
-local LogsTab = Window:CreateTab("Logs", nil)
 local SettingsTab = Window:CreateTab("Settings", nil)
 
 local statusLabel = MainTab:CreateLabel("Loading and indexing dictionary...")
 
--- === LOGS & WINSTREAK STATE ===
-local currentWinstreak = 0
-local lastWinnerName = "None"
-
-lastWonLabel = LogsTab:CreateLabel("Last won: None")
-winstreakLabel = LogsTab:CreateLabel("Winstreak: None")
-
-local function updateGameLogs(winnerName)
-    if not winnerName or winnerName == "" then return end
-
-    lastWinnerName = winnerName
-    if lastWonLabel then
-        lastWonLabel:Set("Last won: " .. tostring(lastWinnerName))
-    end
-
-    local localPlayer = Players.LocalPlayer
-    local myName = localPlayer and localPlayer.Name
-    local formattedTime = os.date("%I.%M %p"):lower()
-
-    if myName and winnerName:lower() == myName:lower() then
-        currentWinstreak = currentWinstreak + 1
-        if winstreakLabel then
-            winstreakLabel:Set("Winstreak: going for " .. tostring(currentWinstreak + 1) .. " winstreak…")
-        end
-        print("🏆 [LOGS]: Victory! Winstreak count: " .. tostring(currentWinstreak))
-    else
-        if currentWinstreak > 0 then
-            if winstreakLabel then
-                winstreakLabel:Set("Winstreak failed (time - " .. formattedTime .. ")")
-            end
-            print("❌ [LOGS]: Winstreak broken at " .. formattedTime)
-        else
-            if winstreakLabel then
-                winstreakLabel:Set("Winstreak: None")
-            end
-        end
-        currentWinstreak = 0
-    end
-end
-
-getgenv().UpdateLogs = updateGameLogs
-
-local globalWordsList = {} 
 local PromptIndex = {}
 
 local function loadDictionaryAsync(url)
@@ -177,7 +136,6 @@ local function loadDictionaryAsync(url)
             local wordLen = #word
             if wordLen >= 2 then
                 total = total + 1
-                table_insert(globalWordsList, word)
                 
                 table_clear(seenSubstrings)
 
@@ -226,10 +184,6 @@ local useFuseProgress = true
 local fusePercent = 0.50          
 local currentFusionStats = "0.00s / 0.00s"
 
--- Human Typos Settings
-local typosEnabled = false
-local typoChancePercent = 3
-
 local wordPriorityMode = "Hyphenated / Short"
 
 local lastHandledPrompt = ""
@@ -246,13 +200,11 @@ local totalTurns = 0
 local typingWPM = 500
 local speedWordDelay = 60 / (typingWPM * 5)
 
-local alphabet = "abcdefghijklmnopqrstuvwxyz"
-
 local function applyRngVariation(baseValue)
     if rngVariationPercent <= 0 then return baseValue end
     local factor = 1 + ((math_random() * 2 - 1) * (rngVariationPercent / 100))
     local result = baseValue * factor
-    return result < 0 and 0 or result
+    return math.max(0.005, result) -- Защита от нулевой или отрицательной задержки
 end
 
 -- === NETWORK EVENTS INITIALIZATION ===
@@ -310,101 +262,6 @@ if Network then
     end
 end
 
--- === GUI WINNER DETECTION (EVENT-DRIVEN & SELF-HEALING) ===
-task.spawn(function()
-    local lastProcessedText = ""
-    local currentConnection = nil
-
-    local function cleanText(str)
-        if not str then return "" end
-        str = str:gsub("<[^>]+>", "")
-        str = str:gsub("[\r\n\t]", " ")
-        str = str:gsub("%s+", " ")
-        return str:match("^%s*(.-)%s*$") or ""
-    end
-
-    local function extractWinner(cleaned)
-        if not cleaned or cleaned == "" then return nil end
-
-        -- Набор шаблонов для определения победителя
-        local winner = cleaned:match("(.-)%s+won the last game")
-            or cleaned:match("(.-)%s+won the game")
-            or cleaned:match("Winner:%s*(.+)")
-            or cleaned:match("(.-)%s+won!")
-
-        return winner
-    end
-
-    local function processText(rawText)
-        print("RAW TEXT:", rawText)
-        if not rawText or rawText == "" then return end
-
-        local cleaned = cleanText(rawText)
-        if cleaned == "" or cleaned == lastProcessedText then return end
-
-        local winnerName = extractWinner(cleaned)
-        if winnerName and winnerName ~= "" then
-            lastProcessedText = cleaned
-            print("🏆 [GUI WINNER]: Detected winner ->", winnerName)
-            if updateGameLogs then
-                updateGameLogs(winnerName)
-            end
-        end
-    end
-
-    local function findSubtitle()
-        local player = Players.LocalPlayer
-        if not player then return nil end
-
-        local playerGui = player:FindFirstChild("PlayerGui")
-        if not playerGui then return nil end
-
-        for _, obj in ipairs(playerGui:GetDescendants()) do
-            if obj:IsA("TextLabel") and obj.Name == "Subtitle" then
-                return obj
-            end
-        end
-        return nil
-    end
-
-    while true do
-        local subtitle = findSubtitle()
-        print("Subtitle object:", subtitle)
-
-        if subtitle and subtitle:IsA("TextLabel") then
-            pcall(function()
-                processText(subtitle.Text)
-            end)
-
-            if currentConnection then
-                currentConnection:Disconnect()
-                currentConnection = nil
-            end
-
-            local success, conn = pcall(function()
-                return subtitle:GetPropertyChangedSignal("Text"):Connect(function()
-                    processText(subtitle.Text)
-                end)
-            end)
-
-            if success and conn then
-                currentConnection = conn
-                while subtitle and subtitle.Parent and subtitle:IsDescendantOf(game) do
-                    task.wait(1)
-                end
-            end
-        end
-
-        if currentConnection then
-            currentConnection:Disconnect()
-            currentConnection = nil
-        end
-
-        task.wait(1)
-    end
-end)
-
-
 -- === DYNAMIC GC FUNCTION SEARCH (FAST, SAFE & SELF-RESETTING) ===
 local activeUpdateFn = nil
 
@@ -451,16 +308,52 @@ end
 
 local function getActiveUpdateInfoFrame()
     if activeUpdateFn and isFnAlive(activeUpdateFn) then
-        return activeUpdateFn
+        local isStuck = false
+        pcall(function()
+            for _, vv in pairs(debug_getupvalues(activeUpdateFn)) do
+                if type(vv) == "table" and vv.Prompt ~= nil then
+                    if type(vv.Prompt) == "string" and vv.Prompt:lower():find("waiting") then
+                        isStuck = true
+                    end
+                end
+            end
+        end)
+        
+        if not isStuck then
+            return activeUpdateFn
+        end
     end
 
     activeUpdateFn = nil
+    local foundFns = {}
+    
     for _, v in pairs(getgc()) do
         if isValidStructure(v) and isFnAlive(v) then
-            activeUpdateFn = v
-            print("🔍 [DEBUG - GC]: Found new active updateInfoFrame function!")
-            return v
+            table_insert(foundFns, v)
         end
+    end
+    
+    for i = #foundFns, 1, -1 do
+        local fn = foundFns[i]
+        local promptText = ""
+        pcall(function()
+            for _, vv in pairs(debug_getupvalues(fn)) do
+                if type(vv) == "table" and vv.Prompt ~= nil then 
+                    promptText = tostring(vv.Prompt):lower()
+                end
+            end
+        end)
+        
+        if not string_find(promptText, "waiting") then
+            activeUpdateFn = fn
+            print("🔍 [DEBUG - GC]: Успешно переключились на НОВУЮ функцию!")
+            return fn
+        end
+    end
+    
+    if #foundFns > 0 then
+        activeUpdateFn = foundFns[#foundFns]
+        return activeUpdateFn
     end
     
     return nil
@@ -544,7 +437,6 @@ local function resetRoundState()
 end
 
 -- === CORE DATA GETTERS ===
-
 local function GetLetters()
     local fn = getActiveUpdateInfoFrame()
     if fn then
@@ -658,7 +550,15 @@ local function typeWordMobile(word, targetPrompt)
         return
     end
 
-    -- 🛡️ ПРОВЕРКА НА ЧАТ
+    -- 🛡️ ЗАЩИТА ОТ СВЕРНУТОГО ОКНА (ALT-TAB)
+    if not is_window_active() then
+        print("⚠️ [DEBUG - Focus]: Window is not active! Pausing typing to prevent OS input spam.")
+        isTyping = false
+        isSubmitting = false
+        return
+    end
+
+    -- 🛡️ ЗАЩИТА НА ЧАТ
     local focusedBox = UserInputService:GetFocusedTextBox()
     if focusedBox and focusedBox ~= getGameTextBox() then
         print("💬 [DEBUG - Chat Protect]: Player is using Chat! Aborting auto-type.")
@@ -691,6 +591,12 @@ local function typeWordMobile(word, targetPrompt)
             break 
         end
         
+        if not is_window_active() then
+            print("⚠️ [DEBUG - Focus]: Window lost focus during typing!")
+            interrupted = true
+            break
+        end
+
         local activeBox = UserInputService:GetFocusedTextBox()
         if activeBox and activeBox ~= textBox then
             print("💬 [DEBUG - Chat Protect]: Player focused chat during typing! Stopping.")
@@ -706,30 +612,8 @@ local function typeWordMobile(word, targetPrompt)
         end
         
         local char = string_sub(word, i, i)
-
-        if typosEnabled and not instanttype and math_random(1, 100) <= typoChancePercent then
-            local wrongCharIndex = math_random(1, #alphabet)
-            local wrongChar = string_sub(alphabet, wrongCharIndex, wrongCharIndex)
-            
-            if wrongChar ~= char then
-                local wrongKeyCode = Enum.KeyCode[wrongChar:upper()]
-                if wrongKeyCode then
-                    Vim:SendKeyEvent(true, wrongKeyCode, false, game)
-                    task_wait(0.01)
-                    Vim:SendKeyEvent(false, wrongKeyCode, false, game)
-                    
-                    task_wait(math_random(200, 400) / 1000)
-                    
-                    Vim:SendKeyEvent(true, Enum.KeyCode.Backspace, false, game)
-                    task_wait(0.01)
-                    Vim:SendKeyEvent(false, Enum.KeyCode.Backspace, false, game)
-                    
-                    task_wait(math_random(100, 250) / 1000)
-                end
-            end
-        end
-
         local keyCode = nil
+        
         if char == "-" then
             keyCode = Enum.KeyCode.Minus
         elseif char == "'" then
@@ -939,8 +823,6 @@ local function copyword(bruteforce)
                 end
                 finalword = longest
 
-            elseif currentMode == "Random" then
-                finalword = validCandidates[math_random(1, #validCandidates)]
             else
                 finalword = validCandidates[math_random(1, #validCandidates)]
             end
@@ -1137,23 +1019,6 @@ SettingsTab:CreateSlider({
    Callback = function(Value) jitterIntensity = Value / 100 end,
 })
 
-SettingsTab:CreateToggle({
-   Name = "Human Typos",
-   CurrentValue = false,
-   Info = "Simulates natural human typing mistakes",
-   Callback = function(Value) typosEnabled = Value end,
-})
-
-SettingsTab:CreateSlider({
-   Name = "Typo Chance",
-   Info = "Chance of making a typo per character (1% to 20%)",
-   Range = {1, 20},
-   Increment = 1,
-   Suffix = "%",
-   CurrentValue = 3,
-   Callback = function(Value) typoChancePercent = Value end,
-})
-
 -- === STATS PANEL ===
 MainTab:CreateSection("Statistics")
 elapsedLabel = MainTab:CreateLabel("Elapsed Time: 00:00:00")
@@ -1197,58 +1062,6 @@ task_spawn(function()
         local seconds = elapsed % 60
         if elapsedLabel then
             elapsedLabel:Set(string.format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds))
-        end
-    end
-end)
-
--- === AGGRESSIVE WAITING WATCHDOG ===
-task_spawn(function()
-    local waitingSince = nil
-
-    while task_wait(1) do
-        if not autosearch then
-            waitingSince = nil
-        else
-            local prompt = GetLetters()
-
-            if prompt and type(prompt) == "string" and prompt:lower():find("waiting") then
-                waitingSince = waitingSince or os_clock()
-
-                if os_clock() - waitingSince >= 30 then
-                    print("⚠️ [WATCHDOG]: Waiting detected for 30 seconds. Performing full recovery...")
-
-                    typingSessionId = typingSessionId + 1
-                    isTyping = false
-                    isSubmitting = false
-
-                    activeUpdateFn = nil
-                    lastHandledPrompt = ""
-                    lastFuseStart = 0
-                    wasMyTurn = false
-
-                    pcall(function()
-                        collectgarbage("collect")
-                    end)
-
-                    task_wait(0.5)
-
-                    pcall(function()
-                        getActiveUpdateInfoFrame()
-                    end)
-
-                    task_wait(0.2)
-
-                    pcall(function()
-                        copyword(true)
-                    end)
-
-                    waitingSince = nil
-
-                    print("✅ [WATCHDOG]: Recovery finished.")
-                end
-            else
-                waitingSince = nil
-            end
         end
     end
 end)
