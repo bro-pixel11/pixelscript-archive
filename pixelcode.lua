@@ -1,20 +1,3 @@
--- === PREVIOUS CONNECTIONS CLEANUP (PREVENT EVENT LEAKS) ===
-if getgenv()._BroPixelConnections then
-    for _, conn in ipairs(getgenv()._BroPixelConnections) do
-        if conn and typeof(conn) == "RBXScriptConnection" and conn.Connected then
-            conn:Disconnect()
-        end
-    end
-end
-getgenv()._BroPixelConnections = {}
-
-local function trackConnection(conn)
-    if conn then
-        table.insert(getgenv()._BroPixelConnections, conn)
-    end
-    return conn
-end
-
 -- === LOCALIZATION OF FREQUENTLY USED FUNCTIONS AND LIBRARIES ===
 local string_find = string.find
 local string_lower = string.lower
@@ -28,7 +11,6 @@ local table_clear = table.clear
 local table_insert = table.insert
 local task_spawn = task.spawn
 local task_wait = task.wait
-local task_cancel = task.cancel
 local os_time = os.time
 local os_clock = os.clock
 local pcall = pcall
@@ -47,11 +29,10 @@ local Players = game:GetService("Players")
 local Vim = game:GetService("VirtualInputManager")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
-local TextChatService = game:GetService("TextChatService")
 
 -- === NEW RENDER HWID & KEY AUTHENTICATION ===
 local API_URL = "https://roblox-key-api-zxnv.onrender.com/verify"
-local userProvidedKey = rawget(getgenv(), "PixelKey") or _G.PixelKey
+local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
 
 if not userProvidedKey or userProvidedKey == "" then
     Players.LocalPlayer:Kick("❌ [Bro-Pixel Auth]: Key not found! Set getgenv().PixelKey = 'YOUR_KEY' before execution.")
@@ -145,6 +126,7 @@ local function loadDictionaryAsync(url)
         end
         
         local total = 0
+        local seenSubstrings = {}
 
         for word in raw:gmatch("[^\r\n]+") do
             word = word:gsub("%s+", ""):lower()
@@ -153,7 +135,7 @@ local function loadDictionaryAsync(url)
                 total = total + 1
                 table_insert(globalWordsList, word)
                 
-                local seenSubstrings = {}
+                table_clear(seenSubstrings)
 
                 for len = 2, 3 do
                     for i = 1, wordLen - len + 1 do
@@ -170,7 +152,7 @@ local function loadDictionaryAsync(url)
                     end
                 end
                 
-                if total % 5000 == 0 then
+                if total % 4000 == 0 then
                     statusLabel:Set("Indexing: " .. total .. " words...")
                     task.wait()
                 end
@@ -185,7 +167,6 @@ loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/w
 
 -- === STATE & SETTINGS ===
 local sessionUsedWords = {}
-local sessionUsedCount = 0
 local lettercap = math_huge
 local autosearch = false
 local autotype = false
@@ -200,6 +181,10 @@ local rngVariationPercent = 0
 local useFuseProgress = true
 local fusePercent = 0.50          
 local currentFusionStats = "0.00s / 0.00s"
+
+-- Human Typos Settings
+local typosEnabled = false
+local typoChancePercent = 3
 
 local wordPriorityMode = "Hyphenated / Short"
 
@@ -217,20 +202,7 @@ local totalTurns = 0
 local typingWPM = 500
 local speedWordDelay = 60 / (typingWPM * 5)
 
-local autoSearchThread = nil
-
-local function markWordAsUsed(word)
-    if not sessionUsedWords[word] then
-        sessionUsedWords[word] = true
-        sessionUsedCount = sessionUsedCount + 1
-        
-        if sessionUsedCount > 1500 then
-            table_clear(sessionUsedWords)
-            sessionUsedCount = 0
-            print("🧹 [DEBUG - Memory]: Cleared sessionUsedWords cache overflow.")
-        end
-    end
-end
+local alphabet = "abcdefghijklmnopqrstuvwxyz"
 
 local function applyRngVariation(baseValue)
     if rngVariationPercent <= 0 then return baseValue end
@@ -255,7 +227,7 @@ if Network then
             ["english"] = true,
         }
 
-        trackConnection(gameEvent.OnClientEvent:Connect(function(...)
+        gameEvent.OnClientEvent:Connect(function(...)
             local args = {...}
             local isTypingEvent = false
             
@@ -280,18 +252,18 @@ if Network then
                 for i = 1, #args do
                     if type(args[i]) == "string" and args[i]:lower() == "changepossessor" then
                         if #currentTypingBuffer > 1 then
-                            markWordAsUsed(currentTypingBuffer)
+                            sessionUsedWords[currentTypingBuffer] = true
                             currentTypingBuffer = ""
                         end
                         break
                     end
                 end
             end
-        end))
+        end)
     end
 end
 
--- === DYNAMIC GC FUNCTION SEARCH ===
+-- === DYNAMIC GC FUNCTION SEARCH (FAST, SAFE & SELF-RESETTING) ===
 local activeUpdateFn = nil
 
 local function isValidStructure(fn)
@@ -412,13 +384,16 @@ local function resetRoundState()
     print("🔄 [DEBUG - Game Reset]: Resetting Round State...")
     activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
-    table_clear(sessionUsedWords)
-    sessionUsedCount = 0
+    sessionUsedWords = {} 
     lastHandledPrompt = ""
     lastFuseStart = 0
     wasMyTurn = false
     isTyping = false
     isSubmitting = false
+    
+    pcall(function()
+        collectgarbage("collect")
+    end)
 
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
@@ -515,16 +490,7 @@ local function getGameTextBox()
     return nil
 end
 
-local function isPlayerInChat()
-    local focusedBox = UserInputService:GetFocusedTextBox()
-    if focusedBox then
-        local gameBox = getGameTextBox()
-        if focusedBox ~= gameBox then return true end
-    end
-    return false
-end
-
--- === TYPING LOGIC ===
+-- === TYPING LOGIC (WITH CHAT PROTECTION & FAILSAFE) ===
 local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
@@ -550,7 +516,9 @@ local function typeWordMobile(word, targetPrompt)
         return
     end
 
-    if isPlayerInChat() then
+    -- 🛡️ ПРОВЕРКА НА ЧАТ
+    local focusedBox = UserInputService:GetFocusedTextBox()
+    if focusedBox and focusedBox ~= getGameTextBox() then
         print("💬 [DEBUG - Chat Protect]: Player is using Chat! Aborting auto-type.")
         isTyping = false
         isSubmitting = false
@@ -581,7 +549,8 @@ local function typeWordMobile(word, targetPrompt)
             break 
         end
         
-        if isPlayerInChat() then
+        local activeBox = UserInputService:GetFocusedTextBox()
+        if activeBox and activeBox ~= textBox then
             print("💬 [DEBUG - Chat Protect]: Player focused chat during typing! Stopping.")
             interrupted = true
             break
@@ -595,6 +564,29 @@ local function typeWordMobile(word, targetPrompt)
         end
         
         local char = string_sub(word, i, i)
+
+        if typosEnabled and not instanttype and math_random(1, 100) <= typoChancePercent then
+            local wrongCharIndex = math_random(1, #alphabet)
+            local wrongChar = string_sub(alphabet, wrongCharIndex, wrongCharIndex)
+            
+            if wrongChar ~= char then
+                local wrongKeyCode = Enum.KeyCode[wrongChar:upper()]
+                if wrongKeyCode then
+                    Vim:SendKeyEvent(true, wrongKeyCode, false, game)
+                    task_wait(0.01)
+                    Vim:SendKeyEvent(false, wrongKeyCode, false, game)
+                    
+                    task_wait(math_random(200, 400) / 1000)
+                    
+                    Vim:SendKeyEvent(true, Enum.KeyCode.Backspace, false, game)
+                    task_wait(0.01)
+                    Vim:SendKeyEvent(false, Enum.KeyCode.Backspace, false, game)
+                    
+                    task_wait(math_random(100, 250) / 1000)
+                end
+            end
+        end
+
         local keyCode = nil
         if char == "-" then
             keyCode = Enum.KeyCode.Minus
@@ -680,7 +672,7 @@ local function getRareScore(word)
     return score
 end
 
--- === WORD SEARCH LOGIC ===
+-- === WORD SEARCH LOGIC WITH PRIORITY & CHAT SAFEGUARD ===
 local function copyword(bruteforce)
     local contains, isMyTurn = getGameStatus()
     local tbl = getInfoTable()
@@ -708,7 +700,8 @@ local function copyword(bruteforce)
         isSubmitting = false
     end
 
-    if isTyping or isSubmitting or isPlayerInChat() then 
+    local focusedBox = UserInputService:GetFocusedTextBox()
+    if isTyping or isSubmitting or (focusedBox and focusedBox ~= getGameTextBox()) then 
         return 
     end
 
@@ -812,7 +805,7 @@ local function copyword(bruteforce)
         end
 
         if finalword then
-            markWordAsUsed(finalword)
+            sessionUsedWords[finalword] = true
             if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
             print("💡 [DEBUG - Search]: Picked word: " .. tostring(finalword) .. " (Mode: " .. tostring(wordPriorityMode) .. ")")
             
@@ -841,14 +834,9 @@ MainTab:CreateToggle({
    CurrentValue = false,
    Callback = function(Value)
       autosearch = Value
-      if autoSearchThread then
-          task_cancel(autoSearchThread)
-          autoSearchThread = nil
-      end
-      
       if autosearch then
           print("▶️ [DEBUG]: Auto Search Enabled")
-          autoSearchThread = task_spawn(function()
+          task_spawn(function()
               local waitingCounter = 0
               while autosearch do 
                   task_wait(0.15)
@@ -857,6 +845,9 @@ MainTab:CreateToggle({
                   if currentPrompt == nil or currentPrompt:lower():find("waiting") then
                       waitingCounter = waitingCounter + 1
                       if waitingCounter >= 6 then
+                          if activeUpdateFn ~= nil then
+                              print("⏳ [DEBUG - GC]: Force clearing cached updateInfoFrame due to timeout.")
+                          end
                           activeUpdateFn = nil 
                           waitingCounter = 0
                       end
@@ -1004,6 +995,23 @@ SettingsTab:CreateSlider({
    Callback = function(Value) jitterIntensity = Value / 100 end,
 })
 
+SettingsTab:CreateToggle({
+   Name = "Human Typos",
+   CurrentValue = false,
+   Info = "Simulates natural human typing mistakes",
+   Callback = function(Value) typosEnabled = Value end,
+})
+
+SettingsTab:CreateSlider({
+   Name = "Typo Chance",
+   Info = "Chance of making a typo per character (1% to 20%)",
+   Range = {1, 20},
+   Increment = 1,
+   Suffix = "%",
+   CurrentValue = 3,
+   Callback = function(Value) typoChancePercent = Value end,
+})
+
 -- === STATS PANEL ===
 MainTab:CreateSection("Statistics")
 elapsedLabel = MainTab:CreateLabel("Elapsed Time: 00:00:00")
@@ -1018,7 +1026,7 @@ MainTab:CreateSection("------------------")
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
-        trackConnection(registerGame.OnClientEvent:Connect(function(gameRoomID)
+        registerGame.OnClientEvent:Connect(function(gameRoomID)
             print("📩 [DEBUG - Network]: RegisterGame Event Fired for RoomID: " .. tostring(gameRoomID))
             resetRoundState()
             
@@ -1034,7 +1042,7 @@ if Games then
                     end)
                 end)
             end
-        end))
+        end)
     end
 end
 
@@ -1051,29 +1059,61 @@ task_spawn(function()
     end
 end)
 
--- === FIXED SAFE WATCHDOG ===
+-- === AGGRESSIVE WAITING WATCHDOG ===
 task_spawn(function()
-    local stuckCounter = 0
+    local waitingSince = nil
 
     while task_wait(1) do
-        if autosearch then
-            local prompt, isMyTurn = getGameStatus()
+        if not autosearch then
+            waitingSince = nil
+        else
+            local prompt = GetLetters()
 
-            -- Если наш ход, но за 10 секунд слово так и не начало печататься / подбираться
-            if isMyTurn and not isTyping and not isSubmitting then
-                stuckCounter = stuckCounter + 1
-                if stuckCounter >= 10 then
-                    print("⚠️ [WATCHDOG]: Turn detected but bot is idle. Recovering state...")
+            if prompt and type(prompt) == "string" and prompt:lower():find("waiting") then
+                waitingSince = waitingSince or os_clock()
+
+                if os_clock() - waitingSince >= 30 then
+                    print("⚠️ [WATCHDOG]: Waiting detected for 30 seconds. Performing full recovery...")
+
+                    -- Останавливаем все текущие процессы
+                    typingSessionId = typingSessionId + 1
+                    isTyping = false
+                    isSubmitting = false
+
+                    -- Сбрасываем кэш
                     activeUpdateFn = nil
                     lastHandledPrompt = ""
                     lastFuseStart = 0
-                    stuckCounter = 0
+                    wasMyTurn = false
+
+                    -- Принудительная сборка мусора
+                    pcall(function()
+                        collectgarbage("collect")
+                    end)
+
+                    -- Даём GC и игре обновиться
+                    task_wait(0.5)
+
+                    -- Сразу ищем новую updateInfoFrame
+                    pcall(function()
+                        getActiveUpdateInfoFrame()
+                    end)
+
+                    -- Даём ей прогрузиться
+                    task_wait(0.2)
+
+                    -- Сразу запускаем поиск слова
+                    pcall(function()
+                        copyword(true)
+                    end)
+
+                    waitingSince = nil
+
+                    print("✅ [WATCHDOG]: Recovery finished.")
                 end
             else
-                stuckCounter = 0
+                waitingSince = nil
             end
-        else
-            stuckCounter = 0
         end
     end
 end)
