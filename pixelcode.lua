@@ -403,6 +403,8 @@ end
 
 -- === CORE DATA GETTERS ===
 
+local waitingStreak = 0
+
 local function GetLetters()
     local fn = getActiveUpdateInfoFrame()
     if fn then
@@ -413,8 +415,18 @@ local function GetLetters()
                 end
             end
         end)
-        if s and type(r) == "string" and r ~= "" and not r:lower():find("waiting") then 
-            return r 
+        
+        if s and type(r) == "string" and r ~= "" then
+            local lowerR = r:lower()
+            if not lowerR:find("waiting") then 
+                waitingStreak = 0
+                return r 
+            else
+                waitingStreak = waitingStreak + 1
+                if waitingStreak >= 3 then
+                    activeUpdateFn = nil
+                end
+            end
         end
     end
 
@@ -425,7 +437,9 @@ local function GetLetters()
             local target = playerGui:FindFirstChild(guiName) or playerGui
             local promptLbl = target:FindFirstChild("PromptLabel", true) or target:FindFirstChild("Prompt", true)
             if promptLbl and promptLbl:IsA("TextLabel") and promptLbl.Visible and promptLbl.Text ~= "" then
-                return promptLbl.Text
+                if not promptLbl.Text:lower():find("waiting") then
+                    return promptLbl.Text
+                end
             end
         end
     end
@@ -1063,46 +1077,39 @@ end)
 task_spawn(function()
     local waitingSince = nil
 
-    while task_wait(1) do
+    while task_wait(0.5) do
         if not autosearch then
             waitingSince = nil
         else
             local prompt = GetLetters()
 
-            if prompt and type(prompt) == "string" and prompt:lower():find("waiting") then
+            if not prompt or prompt:lower():find("waiting") then
                 waitingSince = waitingSince or os_clock()
 
-                if os_clock() - waitingSince >= 30 then
-                    print("⚠️ [WATCHDOG]: Waiting detected for 30 seconds. Performing full recovery...")
+                if os_clock() - waitingSince >= 3.5 then
+                    print("⚠️ [WATCHDOG]: Waiting detected for 3.5s. Performing recovery...")
 
-                    -- Останавливаем все текущие процессы
                     typingSessionId = typingSessionId + 1
                     isTyping = false
                     isSubmitting = false
 
-                    -- Сбрасываем кэш
                     activeUpdateFn = nil
                     lastHandledPrompt = ""
                     lastFuseStart = 0
                     wasMyTurn = false
 
-                    -- Принудительная сборка мусора
                     pcall(function()
                         collectgarbage("collect")
                     end)
 
-                    -- Даём GC и игре обновиться
-                    task_wait(0.5)
+                    task_wait(0.1)
 
-                    -- Сразу ищем новую updateInfoFrame
                     pcall(function()
                         getActiveUpdateInfoFrame()
                     end)
 
-                    -- Даём ей прогрузиться
-                    task_wait(0.2)
+                    task_wait(0.1)
 
-                    -- Сразу запускаем поиск слова
                     pcall(function()
                         copyword(true)
                     end)
