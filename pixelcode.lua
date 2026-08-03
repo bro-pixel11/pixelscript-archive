@@ -259,7 +259,7 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === INTERCEPT NETWORK EVENTS & WINNER LOGS ===
+-- === INTERCEPT NETWORK EVENTS ===
 local Network = ReplicatedStorage:FindFirstChild("Network")
 if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
@@ -281,10 +281,6 @@ if Network then
                     local lowerArg = arg:lower()
                     if lowerArg == "typingevent" then
                         isTypingEvent = true
-                    elseif lowerArg == "winner" or lowerArg == "endgame" or lowerArg == "gameover" then
-                        if args[i + 1] and type(args[i + 1]) == "string" then
-                            updateGameLogs(args[i + 1])
-                        end
                     end
                 end
             end
@@ -313,6 +309,92 @@ if Network then
         end)
     end
 end
+
+-- === GUI WINNER DETECTION (EVENT-DRIVEN & SELF-HEALING) ===
+task.spawn(function()
+    local lastProcessedText = ""
+    local currentConnection = nil
+
+    local function cleanText(str)
+        if not str then return "" end
+        str = str:gsub("<[^>]+>", "")
+        str = str:gsub("[\r\n\t]", " ")
+        str = str:gsub("%s+", " ")
+        return str:match("^%s*(.-)%s*$") or ""
+    end
+
+    local function processText(rawText)
+        if not rawText or rawText == "" then return end
+        
+        print("DEBUG Subtitle raw:", rawText)
+
+        local cleaned = cleanText(rawText)
+        if cleaned == "" or cleaned == lastProcessedText then return end
+
+        local winnerName = cleaned:match("(.-)%s+won the last game")
+        if winnerName and winnerName ~= "" then
+            lastProcessedText = cleaned
+            print("🏆 [GUI WINNER]: Detected winner ->", winnerName)
+            if updateGameLogs then
+                updateGameLogs(winnerName)
+            end
+        end
+    end
+
+    local function getSubtitleLabel()
+        local player = Players.LocalPlayer
+        if not player then return nil end
+
+        local playerGui = player:FindFirstChild("PlayerGui")
+        if not playerGui then return nil end
+
+        local gameUI = playerGui:FindFirstChild("GameUI")
+        if not gameUI then return nil end
+
+        local container = gameUI:FindFirstChild("Container")
+        local gameSpace = container and container:FindFirstChild("GameSpace")
+        local defaultUI = gameSpace and gameSpace:FindFirstChild("DefaultUI")
+        local infoSpace = defaultUI and defaultUI:FindFirstChild("Infospace")
+        
+        return infoSpace and infoSpace:FindFirstChild("Subtitle")
+    end
+
+    while true do
+        local subtitle = getSubtitleLabel()
+
+        if subtitle and subtitle:IsA("TextLabel") then
+            pcall(function()
+                processText(subtitle.Text)
+            end)
+
+            if currentConnection then
+                currentConnection:Disconnect()
+                currentConnection = nil
+            end
+
+            local success, conn = pcall(function()
+                return subtitle:GetPropertyChangedSignal("Text"):Connect(function()
+                    processText(subtitle.Text)
+                end)
+            end)
+
+            if success and conn then
+                currentConnection = conn
+                while subtitle and subtitle.Parent and subtitle:IsDescendantOf(game) do
+                    task.wait(1)
+                end
+            end
+        end
+
+        if currentConnection then
+            currentConnection:Disconnect()
+            currentConnection = nil
+        end
+
+        task.wait(1)
+    end
+end)
+
 
 -- === DYNAMIC GC FUNCTION SEARCH (FAST, SAFE & SELF-RESETTING) ===
 local activeUpdateFn = nil
