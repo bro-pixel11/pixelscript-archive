@@ -81,6 +81,7 @@ print("✅ [Bro-Pixel Auth]: Authorization successful: " .. tostring(authMessage
 getgenv().deletewhendupefound = true
 
 local elapsedLabel, turnsLabel, promptLabel, solutionsLabel, matchLabel, fusionLabel
+local lastWonLabel, winstreakLabel
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
@@ -109,9 +110,52 @@ local Window = Rayfield:CreateWindow({
 
 local MainTab = Window:CreateTab("Main", nil)
 local DictionaryTab = Window:CreateTab("Dictionary", nil)
+local LogsTab = Window:CreateTab("Logs", nil)
 local SettingsTab = Window:CreateTab("Settings", nil)
 
 local statusLabel = MainTab:CreateLabel("Loading and indexing dictionary...")
+
+-- === LOGS & WINSTREAK STATE ===
+local currentWinstreak = 0
+local lastWinnerName = "None"
+
+lastWonLabel = LogsTab:CreateLabel("Last won: None")
+winstreakLabel = LogsTab:CreateLabel("Winstreak: None")
+
+local function updateGameLogs(winnerName)
+    if not winnerName or winnerName == "" then return end
+
+    lastWinnerName = winnerName
+    if lastWonLabel then
+        lastWonLabel:Set("Last won: " .. tostring(lastWinnerName))
+    end
+
+    local localPlayer = Players.LocalPlayer
+    local myName = localPlayer and localPlayer.Name
+    local formattedTime = os.date("%I.%M %p"):lower()
+
+    if myName and winnerName:lower() == myName:lower() then
+        currentWinstreak = currentWinstreak + 1
+        if winstreakLabel then
+            winstreakLabel:Set("Winstreak: going for " .. tostring(currentWinstreak + 1) .. " winstreak…")
+        end
+        print("🏆 [LOGS]: Victory! Winstreak count: " .. tostring(currentWinstreak))
+    else
+        if currentWinstreak > 0 then
+            if winstreakLabel then
+                winstreakLabel:Set("Winstreak failed (time - " .. formattedTime .. ")")
+            end
+            print("❌ [LOGS]: Winstreak broken at " .. formattedTime)
+        else
+            if winstreakLabel then
+                winstreakLabel:Set("Winstreak: None")
+            end
+        end
+        currentWinstreak = 0
+    end
+end
+
+getgenv().UpdateLogs = updateGameLogs
 
 local globalWordsList = {} 
 local PromptIndex = {}
@@ -215,7 +259,7 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === INTERCEPT AND MEMORIZE OTHER PLAYERS' WORDS ===
+-- === INTERCEPT NETWORK EVENTS & WINNER LOGS ===
 local Network = ReplicatedStorage:FindFirstChild("Network")
 if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
@@ -232,9 +276,16 @@ if Network then
             local isTypingEvent = false
             
             for i = 1, #args do
-                if type(args[i]) == "string" and args[i]:lower() == "typingevent" then
-                    isTypingEvent = true
-                    break
+                local arg = args[i]
+                if type(arg) == "string" then
+                    local lowerArg = arg:lower()
+                    if lowerArg == "typingevent" then
+                        isTypingEvent = true
+                    elseif lowerArg == "winner" or lowerArg == "endgame" or lowerArg == "gameover" then
+                        if args[i + 1] and type(args[i + 1]) == "string" then
+                            updateGameLogs(args[i + 1])
+                        end
+                    end
                 end
             end
 
@@ -1075,34 +1126,27 @@ task_spawn(function()
                 if os_clock() - waitingSince >= 30 then
                     print("⚠️ [WATCHDOG]: Waiting detected for 30 seconds. Performing full recovery...")
 
-                    -- Останавливаем все текущие процессы
                     typingSessionId = typingSessionId + 1
                     isTyping = false
                     isSubmitting = false
 
-                    -- Сбрасываем кэш
                     activeUpdateFn = nil
                     lastHandledPrompt = ""
                     lastFuseStart = 0
                     wasMyTurn = false
 
-                    -- Принудительная сборка мусора
                     pcall(function()
                         collectgarbage("collect")
                     end)
 
-                    -- Даём GC и игре обновиться
                     task_wait(0.5)
 
-                    -- Сразу ищем новую updateInfoFrame
                     pcall(function()
                         getActiveUpdateInfoFrame()
                     end)
 
-                    -- Даём ей прогрузиться
                     task_wait(0.2)
 
-                    -- Сразу запускаем поиск слова
                     pcall(function()
                         copyword(true)
                     end)
