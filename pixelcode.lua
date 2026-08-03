@@ -324,6 +324,7 @@ task.spawn(function()
     end
 
     local function processText(rawText)
+        print("RAW TEXT:", rawText)
         if not rawText or rawText == "" then return end
         
         print("DEBUG Subtitle raw:", rawText)
@@ -361,6 +362,7 @@ task.spawn(function()
 
     while true do
         local subtitle = getSubtitleLabel()
+        print("Subtitle object:", subtitle)
 
         if subtitle and subtitle:IsA("TextLabel") then
             pcall(function()
