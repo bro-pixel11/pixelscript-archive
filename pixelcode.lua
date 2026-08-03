@@ -30,6 +30,9 @@ local Vim = game:GetService("VirtualInputManager")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
+-- === EXPLOIT SPECIFIC FUNCTIONS ===
+local is_window_active = isrbxactive or iswindowactive or function() return true end
+
 -- === NEW RENDER HWID & KEY AUTHENTICATION ===
 local API_URL = "https://roblox-key-api-zxnv.onrender.com/verify"
 local userProvidedKey = getgenv().PixelKey or _G.PixelKey or PixelKey
@@ -60,7 +63,7 @@ local function checkKey(userKey)
             end
         else
             if type(response) == "string" and (string_find(response, "<html") or string_find(response, "<head")) then
-                return false, "Сервер ключей запускается (спящий режим Render). Подождите 30 секунд и перезапустите скрипт."
+                return false, "Сервер авторизации запускается. Пожалуйста, подождите 30-50 секунд и перезапустите скрипт."
             end
             return false, "Invalid response structure from server!"
         end
@@ -114,58 +117,236 @@ local SettingsTab = Window:CreateTab("Settings", nil)
 
 local statusLabel = MainTab:CreateLabel("Loading and indexing dictionary...")
 
+-- === SAFE UTILITIES & ERROR HANDLING ===
+local function safeExecute(componentName, callback, ...)
+    local success, result = pcall(callback, ...)
+    if not success then
+        warn(string.format("[%s Error]: %s", tostring(componentName), tostring(result)))
+    end
+    return success, result
+end
+
+-- === DICTIONARY STORAGE & INDEXING ===
+local Words = {}
 local PromptIndex = {}
 
-local function loadDictionaryAsync(url)
-    task.spawn(function()
+local function loadDictionaryAsync(url, statusCallback)
+    task_spawn(function()
         local success, raw = pcall(function() return game:HttpGet(url) end)
         if not success or not raw then 
-            statusLabel:Set("Failed to load dictionary!")
-            print("❌ [DEBUG]: Failed to download dictionary!")
+            if statusCallback then statusCallback:Set("Failed to load dictionary!") end
+            warn("[Dictionary Error]: Failed to download dictionary file.")
             return 
         end
         
-        local total = 0
-        local seenSubstrings = {}
-
+        table_clear(Words)
+        table_clear(PromptIndex)
+        
+        local wordSet = {}
+        local rawWords = {}
+        
         for word in raw:gmatch("[^\r\n]+") do
             word = word:gsub("%s+", ""):lower()
-            local wordLen = #word
-            if wordLen >= 2 then
-                total = total + 1
-                
-                table_clear(seenSubstrings)
-
-                for len = 2, 3 do
-                    for i = 1, wordLen - len + 1 do
-                        local sub = string_sub(word, i, i + len - 1)
-                        if not seenSubstrings[sub] then
-                            seenSubstrings[sub] = true
-                            local list = PromptIndex[sub]
-                            if not list then
-                                list = {}
-                                PromptIndex[sub] = list
-                            end
-                            table_insert(list, word)
-                        end
-                    end
-                end
-                
-                if total % 4000 == 0 then
-                    statusLabel:Set("Indexing: " .. total .. " words...")
-                    task.wait()
-                end
+            if #word >= 2 and not wordSet[word] then
+                wordSet[word] = true
+                table_insert(rawWords, word)
             end
         end
-        statusLabel:Set("Dictionary: " .. total .. " words (Indexed & Ready)")
-        print("✅ [DEBUG]: Dictionary indexed with " .. total .. " words.")
+        
+        wordSet = nil
+        local totalWords = #rawWords
+        local seenSubstrings = {}
+
+        for i = 1, totalWords do
+            local word = rawWords[i]
+            Words[i] = word
+            
+            table_clear(seenSubstrings)
+            local wordLen = #word
+            
+            for len = 2, 3 do
+                for pos = 1, wordLen - len + 1 do
+                    local sub = string_sub(word, pos, pos + len - 1)
+                    if not seenSubstrings[sub] then
+                        seenSubstrings[sub] = true
+                        local list = PromptIndex[sub]
+                        if not list then
+                            list = {}
+                            PromptIndex[sub] = list
+                        end
+                        table_insert(list, i)
+                    end
+                end
+            end
+            
+            if i % 500 == 0 then
+                if statusCallback then
+                    statusCallback:Set("Indexing: " .. i .. " / " .. totalWords .. " words...")
+                end
+                task_wait()
+            end
+        end
+        
+        if statusCallback then
+            statusCallback:Set("Dictionary: " .. totalWords .. " words (Indexed & Ready)")
+        end
+        print("✅ [Dictionary]: Indexed " .. totalWords .. " unique words.")
     end)
 end
 
-loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt")
+loadDictionaryAsync("https://raw.githubusercontent.com/bro-pixel11/wbdict/main/word-bomb-list.txt", statusLabel)
+
+-- === WORD STATE MANAGEMENT ===
+local PendingWords = {}
+local UsedWords = {}
+
+local function markWordPending(word)
+    if word then PendingWords[word] = true end
+end
+
+local function confirmWordUsed(word)
+    if word then
+        PendingWords[word] = nil
+        UsedWords[word] = true
+    end
+end
+
+local function clearPendingWord(word)
+    if word then PendingWords[word] = nil end
+end
+
+local function resetWordStates()
+    table_clear(PendingWords)
+    table_clear(UsedWords)
+end
+
+-- === OPERATION GENERATION & CANCELLATION ===
+local operationGeneration = 0
+
+local function cancelCurrentOperation()
+    operationGeneration += 1
+    return operationGeneration
+end
+
+local function isOperationValid(localToken)
+    return localToken == operationGeneration
+end
+
+-- === TIMING AND VARIATION HELPERS ===
+local function applyRandomVariation(baseValue, variationPercent)
+    if not variationPercent or variationPercent <= 0 then return baseValue end
+    local factor = 1 + ((math_random() * 2 - 1) * (variationPercent / 100))
+    local result = baseValue * factor
+    return math.max(0.005, result)
+end
+
+local function getCharacterDelay(speedWordDelaySeconds, jitterEnabled, jitterSeconds, variationPercent)
+    local currentDelay = applyRandomVariation(speedWordDelaySeconds, variationPercent)
+    
+    if jitterEnabled and jitterSeconds > 0 then
+        local jitterOffset = (math_random() * 2 - 1) * applyRandomVariation(jitterSeconds, variationPercent)
+        currentDelay += jitterOffset
+    end
+    
+    return math.max(0.005, currentDelay)
+end
+
+local function formatElapsedTime(totalSeconds)
+    local hours = math_floor(totalSeconds / 3600)
+    local minutes = math_floor((totalSeconds % 3600) / 60)
+    local seconds = totalSeconds % 60
+    return string.format("%02d:%02d:%02d", hours, minutes, seconds)
+end
+
+-- === RARE SCORE CALCULATOR & CANDIDATE SELECTION ===
+local LETTER_WEIGHTS = {
+    q=8, x=8, z=8, j=8,
+    k=4, v=4, w=4, y=3, f=3, p=3, b=3, g=3, m=3, c=3, d=3,
+    e=1, t=1, a=1, o=1, i=1, n=1, s=1, r=1, h=2, l=1, u=2
+}
+
+local function getRareScore(word)
+    local score = 0
+    local len = #word
+    for i = 1, len do
+        local char = string_sub(word, i, i)
+        score += (LETTER_WEIGHTS[char] or 1)
+    end
+    if len > 7 then
+        score += ((len - 7) * 3)
+    end
+    return score
+end
+
+local function chooseCandidate(candidates, mode, lettercap)
+    if not candidates or #candidates == 0 then
+        return nil, 0
+    end
+
+    local validCount = 0
+    local chosenWord = nil
+    local bestScore = -math_huge
+    local targetLength = (mode == "Shortest") and math_huge or -math_huge
+    local hasSpecialChoice = false
+
+    for i = 1, #candidates do
+        local wordId = candidates[i]
+        local word = Words[wordId]
+        
+        if word and #word <= lettercap and not UsedWords[word] and not PendingWords[word] then
+            validCount += 1
+            local wordLen = #word
+            
+            if mode == "Rare Words" then
+                local score = getRareScore(word)
+                if score > bestScore then
+                    bestScore = score
+                    chosenWord = word
+                end
+                
+            elseif mode == "Hyphenated / Short" or mode == "Hyphenated/short" then
+                local isSpecial = string_find(word, "-", 1, true) or string_find(word, "'", 1, true)
+                if isSpecial then
+                    if not hasSpecialChoice then
+                        hasSpecialChoice = true
+                        chosenWord = word
+                        targetLength = wordLen
+                    elseif wordLen < targetLength then
+                        targetLength = wordLen
+                        chosenWord = word
+                    end
+                elseif not hasSpecialChoice then
+                    if wordLen < targetLength then
+                        targetLength = wordLen
+                        chosenWord = word
+                    end
+                end
+                
+            elseif mode == "Shortest" then
+                if wordLen < targetLength then
+                    targetLength = wordLen
+                    chosenWord = word
+                end
+                
+            elseif mode == "Longest" then
+                if wordLen > targetLength then
+                    targetLength = wordLen
+                    chosenWord = word
+                end
+                
+            elseif mode == "Random" then
+                -- Reservoir Sampling (k = 1)
+                if math_random(1, validCount) == 1 then
+                    chosenWord = word
+                end
+            end
+        end
+    end
+
+    return chosenWord, validCount
+end
 
 -- === STATE & SETTINGS ===
-local sessionUsedWords = {}
 local lettercap = math_huge
 local autosearch = false
 local autotype = false
@@ -173,7 +354,7 @@ local instanttype = false
 local autojoin = false
 local autoJoinDelay = 2 
 local jitterEnabled = false 
-local jitterIntensity = 0.05 
+local jitterSeconds = 0.005 
 local rngVariationPercent = 0 
 
 -- Fuse Delay Settings
@@ -186,23 +367,14 @@ local wordPriorityMode = "Hyphenated / Short"
 local lastHandledPrompt = ""
 local lastFuseStart = 0
 local wasMyTurn = false
-local isTyping = false 
 local isSubmitting = false 
-local typingSessionId = 0
 
-local checkWordDelay = 1.0 
+local fallbackDelaySeconds = 1.0 
 local startTime = os_time()
 local totalTurns = 0
 
 local typingWPM = 500
-local speedWordDelay = 60 / (typingWPM * 5)
-
-local function applyRngVariation(baseValue)
-    if rngVariationPercent <= 0 then return baseValue end
-    local factor = 1 + ((math_random() * 2 - 1) * (rngVariationPercent / 100))
-    local result = baseValue * factor
-    return math.max(0.005, result)
-end
+local speedWordDelaySeconds = 60 / (typingWPM * 5)
 
 -- === NETWORK EVENTS INITIALIZATION ===
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
@@ -226,11 +398,9 @@ if Network then
             
             for i = 1, #args do
                 local arg = args[i]
-                if type(arg) == "string" then
-                    local lowerArg = arg:lower()
-                    if lowerArg == "typingevent" then
-                        isTypingEvent = true
-                    end
+                if type(arg) == "string" and arg:lower() == "typingevent" then
+                    isTypingEvent = true
+                    break
                 end
             end
 
@@ -248,7 +418,7 @@ if Network then
                 for i = 1, #args do
                     if type(args[i]) == "string" and args[i]:lower() == "changepossessor" then
                         if #currentTypingBuffer > 1 then
-                            sessionUsedWords[currentTypingBuffer] = true
+                            confirmWordUsed(currentTypingBuffer)
                             currentTypingBuffer = ""
                         end
                         break
@@ -259,11 +429,12 @@ if Network then
     end
 end
 
--- === DYNAMIC GC FUNCTION SEARCH ===
+-- === DYNAMIC GC FUNCTION SEARCH (FAST, SAFE & SELF-RESETTING) ===
 local activeUpdateFn = nil
 
 local function isValidStructure(fn)
     if type(fn) ~= "function" then return false end
+    
     local isTargetName = false
     pcall(function()
         if debug_getinfo(fn).name == "updateInfoFrame" then
@@ -283,6 +454,7 @@ local function isValidStructure(fn)
             end
         end
     end)
+    
     return hasPrompt and hasPlayerID
 end
 
@@ -313,7 +485,10 @@ local function getActiveUpdateInfoFrame()
                 end
             end
         end)
-        if not isStuck then return activeUpdateFn end
+        
+        if not isStuck then
+            return activeUpdateFn
+        end
     end
 
     activeUpdateFn = nil
@@ -338,6 +513,7 @@ local function getActiveUpdateInfoFrame()
         
         if not string_find(promptText, "waiting") then
             activeUpdateFn = fn
+            print("🔍 [DEBUG - GC]: Switched to NEW frame function.")
             return fn
         end
     end
@@ -346,6 +522,7 @@ local function getActiveUpdateInfoFrame()
         activeUpdateFn = foundFns[#foundFns]
         return activeUpdateFn
     end
+    
     return nil
 end
 
@@ -365,46 +542,55 @@ local function getInfoTable()
 end
 
 -- === FUSE DELAY LOGIC ===
-local function waitFuseProgress(targetSession)
+local function waitFuseProgress(localToken)
     if not useFuseProgress then return end
+
     local tbl = getInfoTable()
+    
     if not tbl or not tbl.FuseStart or tbl.FuseStart <= 1000 or not tbl.FuseRate or tbl.FuseRate == 0 then
-        if checkWordDelay > 0 and not instanttype then task.wait(applyRngVariation(checkWordDelay)) end
+        if fallbackDelaySeconds > 0 and not instanttype then
+            task_wait(applyRandomVariation(fallbackDelaySeconds, rngVariationPercent))
+        end
         return
     end
 
     local fuseStart = tbl.FuseStart
     local fuseRate = tbl.FuseRate
-    local totalFuseTime = math.abs(1 / fuseRate)
-    local targetWaitSeconds = totalFuseTime * fusePercent
-    targetWaitSeconds = math.max(0, targetWaitSeconds - 0.05)
-    local localStart = os.clock()
+    
+    local fuseDurationSeconds = math.abs(1 / fuseRate)
+    local targetWaitSeconds = math.max(0, (fuseDurationSeconds * fusePercent) - 0.05)
 
-    while typingSessionId == targetSession do
+    local localStart = os_clock()
+
+    while isOperationValid(localToken) do
         local tblCurrent = getInfoTable()
         if not tblCurrent or tblCurrent.FuseStart ~= fuseStart then break end
 
-        local elapsed = os.clock() - localStart
-        currentFusionStats = string.format("%.2fs / %.2fs", math.min(elapsed, totalFuseTime), totalFuseTime)
-        if fusionLabel then fusionLabel:Set("Fusion Progress: " .. currentFusionStats) end
+        local elapsed = os_clock() - localStart
+
+        currentFusionStats = string.format("%.2fs / %.2fs", math.min(elapsed, fuseDurationSeconds), fuseDurationSeconds)
+        if fusionLabel then 
+            fusionLabel:Set("Fusion Progress: " .. currentFusionStats) 
+        end
+
         if elapsed >= targetWaitSeconds then break end
         
-        task.wait(0.01)
+        task_wait(0.01)
     end
 end
 
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
+    print("🔄 [DEBUG - Game Reset]: Resetting Round State...")
     activeUpdateFn = nil 
-    typingSessionId = typingSessionId + 1 
-    sessionUsedWords = {} 
+    cancelCurrentOperation()
+    resetWordStates()
+    
     lastHandledPrompt = ""
     lastFuseStart = 0
     wasMyTurn = false
-    isTyping = false
     isSubmitting = false
-    
-    pcall(function() collectgarbage("collect") end)
+
     if promptLabel then promptLabel:Set("Current Prompt: Waiting...") end
     if solutionsLabel then solutionsLabel:Set("Solutions Found: 0") end
     if matchLabel then matchLabel:Set("Current Match: Waiting...") end
@@ -422,7 +608,9 @@ local function GetLetters()
                 end
             end
         end)
-        if s and type(r) == "string" and r ~= "" and not r:lower():find("waiting") then return r end
+        if s and type(r) == "string" and r ~= "" and not r:lower():find("waiting") then 
+            return r 
+        end
     end
 
     local localPlayer = Players.LocalPlayer
@@ -436,6 +624,7 @@ local function GetLetters()
             end
         end
     end
+
     return nil
 end
 
@@ -481,6 +670,7 @@ local function getGameStatus()
             end
         end
     end
+
     return prompt, isMyTurn
 end
 
@@ -495,77 +685,93 @@ local function getGameTextBox()
     return nil
 end
 
--- === MOBILE TYPING LOGIC (DELTA OPTIMIZED) ===
+-- === TYPING LOGIC (WITH CANCELLATION TOKEN & CHAT PROTECTION) ===
 local function typeWordMobile(word, targetPrompt)
-    if isTyping then return end 
-    isTyping = true 
-    
-    typingSessionId = typingSessionId + 1
-    local currentSession = typingSessionId
+    local token = cancelCurrentOperation()
+    markWordPending(word)
+
+    print("⌨️ [Type Process]: Starting typing for word: " .. tostring(word))
 
     if not instanttype then 
         if useFuseProgress then
-            waitFuseProgress(currentSession)
-        elseif checkWordDelay > 0 then 
-            task_wait(applyRngVariation(checkWordDelay)) 
+            waitFuseProgress(token)
+        elseif fallbackDelaySeconds > 0 then 
+            local finalDelay = applyRandomVariation(fallbackDelaySeconds, rngVariationPercent)
+            task_wait(finalDelay) 
         end
     end
     
-    if currentSession ~= typingSessionId then
-        isTyping = false; isSubmitting = false; return
+    if not isOperationValid(token) then
+        print("⚠️ [Type Process]: Cancelled due to token generation mismatch.")
+        clearPendingWord(word)
+        return
+    end
+
+    if not is_window_active() then
+        print("⚠️ [Focus]: Window lost focus! Cancelling typing.")
+        clearPendingWord(word)
+        return
+    end
+
+    local focusedBox = UserInputService:GetFocusedTextBox()
+    if focusedBox and focusedBox ~= getGameTextBox() then
+        print("💬 [Chat Protect]: Chat box in use! Cancelling auto-type.")
+        clearPendingWord(word)
+        return
     end
 
     local currentPrompt, isMyTurn = getGameStatus()
     if currentPrompt ~= targetPrompt or not isMyTurn then
-        isTyping = false; isSubmitting = false; return
+        print("⚠️ [Type Process]: Turn or prompt changed before typing started.")
+        clearPendingWord(word)
+        return
     end
     
     local textBox = getGameTextBox()
-    if not textBox then 
-        isTyping = false; isSubmitting = false; return 
+    if textBox then 
+        textBox:CaptureFocus() 
+        task_wait(0.01)
+        textBox.Text = "" 
+        task_wait(0.01)
     end
-
-    -- На мобилках (Delta) чат и защита работает иначе. Убраны конфликтующие ПК проверки окон.
-    local focusedBox = UserInputService:GetFocusedTextBox()
-    if focusedBox and focusedBox ~= textBox then
-        print("💬 [DEBUG - Chat Protect]: Чат активен! Отмена автотайпинга.")
-        isTyping = false; isSubmitting = false; return
-    end
-
-    textBox:CaptureFocus() 
-    task_wait(0.01)
-    textBox.Text = "" 
-    task_wait(0.01)
     
     local interrupted = false
 
     for i = 1, #word do
-        if currentSession ~= typingSessionId then interrupted = true; break end
+        if not isOperationValid(token) or not is_window_active() then 
+            interrupted = true
+            break 
+        end
 
         local activeBox = UserInputService:GetFocusedTextBox()
-        if activeBox and activeBox ~= textBox then interrupted = true; break end
+        if activeBox and activeBox ~= textBox then
+            interrupted = true
+            break
+        end
 
         local checkPrompt, checkTurn = getGameStatus()
-        if checkPrompt ~= targetPrompt or not checkTurn then interrupted = true; break end
+        if checkPrompt ~= targetPrompt or not checkTurn then 
+            interrupted = true
+            break 
+        end
         
         local char = string_sub(word, i, i)
-        local keyCode = nil
-        if char == "-" then keyCode = Enum.KeyCode.Minus
-        elseif char == "'" then keyCode = Enum.KeyCode.Quote
-        else keyCode = Enum.KeyCode[char:upper()] end
+        local keyCode = (char == "-") and Enum.KeyCode.Minus 
+            or (char == "'") and Enum.KeyCode.Quote 
+            or Enum.KeyCode[char:upper()]
         
         if keyCode then
-            local currentDelay = speedWordDelay
-            if instanttype then currentDelay = 0
-            else
-                currentDelay = applyRngVariation(speedWordDelay)
-                if jitterEnabled then
-                    currentDelay = currentDelay + ((math_random() * 2 - 1) * applyRngVariation(jitterIntensity))
-                end
-                if currentDelay < 0.005 then currentDelay = 0.005 end
+            local currentDelay = 0
+            if not instanttype then
+                currentDelay = getCharacterDelay(
+                    speedWordDelaySeconds, 
+                    jitterEnabled, 
+                    jitterSeconds, 
+                    rngVariationPercent
+                )
             end
             
-            if i == 1 and textBox.Text ~= "" then textBox.Text = "" end
+            if i == 1 and textBox and textBox.Text ~= "" then textBox.Text = "" end
             
             Vim:SendKeyEvent(true, keyCode, false, game)
             if currentDelay > 0 then task_wait(currentDelay / 2) end
@@ -574,77 +780,49 @@ local function typeWordMobile(word, targetPrompt)
         end
     end
     
-    if not interrupted and currentSession == typingSessionId then
+    if not interrupted and isOperationValid(token) then
         local finalPrompt, finalTurn = getGameStatus()
         if finalPrompt == targetPrompt and finalTurn then
             isSubmitting = true 
-            if not instanttype then task_wait(0.03) end
-            Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+
             if not instanttype then task_wait(0.02) end
+            Vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+            if not instanttype then task_wait(0.01) end
             Vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            if not instanttype then task_wait(0.03) end
             
-            totalTurns = totalTurns + 1
+            totalTurns += 1
             if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
-            print("✅ [DEBUG - VIM Mobile]: Word successfully submitted: " .. tostring(word))
+            print("✅ [Type Process]: Submitted word: " .. tostring(word))
         else
-            textBox.Text = ""
+            if textBox then textBox.Text = "" end
+            clearPendingWord(word)
             isSubmitting = false
         end
     else
+        clearPendingWord(word)
         isSubmitting = false
     end
-    
-    if currentSession == typingSessionId then
-        isTyping = false 
-    end
 end
 
--- === RARE WORD SCORING SYSTEM ===
-local letterWeights = {
-    q=8, x=8, z=8, j=8, k=4, v=4, w=4, y=3, f=3, p=3, b=3, g=3, m=3, c=3, d=3,
-    e=1, t=1, a=1, o=1, i=1, n=1, s=1, r=1, h=2, l=1, u=2
-}
-
-local function getRareScore(word)
-    local score = 0
-    local len = #word
-    for i = 1, len do
-        local char = string_sub(word, i, i)
-        score = score + (letterWeights[char] or 1)
-    end
-    if len > 7 then score = score + ((len - 7) * 3) end
-    return score
-end
-
--- === WORD SEARCH LOGIC ===
+-- === WORD SEARCH LOGIC WITH PRIORITY & CHAT SAFEGUARD ===
 local function copyword(bruteforce)
     local contains, isMyTurn = getGameStatus()
     local tbl = getInfoTable()
     local currentFuseStart = tbl and tbl.FuseStart or 0
     
-    if not contains or contains == "" then 
+    if not contains or contains == "" or not isMyTurn then 
         lastHandledPrompt = ""
         isSubmitting = false
         return 
-    end
-
-    if not isMyTurn then
-        lastHandledPrompt = ""
-        isSubmitting = false
-        return
     end
 
     if contains ~= lastHandledPrompt or (lastFuseStart > 0 and currentFuseStart ~= lastFuseStart) then
         isSubmitting = false
     end
 
-    if isTyping and contains ~= lastHandledPrompt then
-        isTyping = false
-        isSubmitting = false
-    end
-
     local focusedBox = UserInputService:GetFocusedTextBox()
-    if isTyping or isSubmitting or (focusedBox and focusedBox ~= getGameTextBox()) then 
+    if isSubmitting or (focusedBox and focusedBox ~= getGameTextBox()) then 
         return 
     end
 
@@ -653,88 +831,25 @@ local function copyword(bruteforce)
     if contains ~= lastHandledPrompt or (lastFuseStart > 0 and currentFuseStart ~= lastFuseStart) or bruteforce then
         lastHandledPrompt = contains
         lastFuseStart = currentFuseStart
+        print("🎯 [Search]: New turn detected! Prompt: " .. tostring(contains))
         
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
 
         local promptLower = contains:lower()
-        local validCandidates = {}
-        local specialMatches = {}
-        local normalMatches = {}
-        
         local candidates = PromptIndex[promptLower]
-        if candidates then
-            for i = 1, #candidates do
-                local candidate = candidates[i]
-                if #candidate <= lettercap and not sessionUsedWords[candidate] then
-                    table_insert(validCandidates, candidate)
-                    if string_find(candidate, "-", 1, true) or string_find(candidate, "'", 1, true) then
-                        table_insert(specialMatches, candidate)
-                    else
-                        table_insert(normalMatches, candidate)
-                    end
-                end
-            end
+        
+        local currentMode = wordPriorityMode
+        if type(currentMode) == "table" then
+            currentMode = currentMode[1] or "Hyphenated / Short"
         end
 
-        if solutionsLabel then solutionsLabel:Set("Solutions Found: " .. #validCandidates) end
+        local finalword, validCount = chooseCandidate(candidates, currentMode, lettercap)
 
-        local finalword = nil
-
-        if #validCandidates > 0 then
-            local currentMode = wordPriorityMode
-            if type(currentMode) == "table" then currentMode = currentMode[1] or "Hyphenated / Short" end
-
-            if currentMode == "Rare Words" then
-                local bestWord = validCandidates[1]
-                local maxScore = -1
-                for i = 1, #validCandidates do
-                    local score = getRareScore(validCandidates[i])
-                    if score > maxScore then
-                        maxScore = score
-                        bestWord = validCandidates[i]
-                    end
-                end
-                finalword = bestWord
-
-            elseif currentMode == "Hyphenated / Short" or currentMode == "Hyphenated/short" then
-                if #specialMatches > 0 then
-                    finalword = specialMatches[math_random(1, #specialMatches)]
-                elseif #normalMatches > 0 then
-                    local shortest = normalMatches[1]
-                    for i = 2, #normalMatches do
-                        if #normalMatches[i] < #shortest then shortest = normalMatches[i] end
-                    end
-                    finalword = shortest
-                else
-                    local shortest = validCandidates[1]
-                    for i = 2, #validCandidates do
-                        if #validCandidates[i] < #shortest then shortest = validCandidates[i] end
-                    end
-                    finalword = shortest
-                end
-
-            elseif currentMode == "Shortest" then
-                local shortest = validCandidates[1]
-                for i = 2, #validCandidates do
-                    if #validCandidates[i] < #shortest then shortest = validCandidates[i] end
-                end
-                finalword = shortest
-
-            elseif currentMode == "Longest" then
-                local longest = validCandidates[1]
-                for i = 2, #validCandidates do
-                    if #validCandidates[i] > #longest then longest = validCandidates[i] end
-                end
-                finalword = longest
-
-            else
-                finalword = validCandidates[math_random(1, #validCandidates)]
-            end
-        end
+        if solutionsLabel then solutionsLabel:Set("Solutions Found: " .. validCount) end
 
         if finalword then
-            sessionUsedWords[finalword] = true
             if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
+            print("💡 [Search]: Picked word: " .. tostring(finalword) .. " (Mode: " .. tostring(currentMode) .. ")")
             
             if autotype and isMyTurn then
                 task_spawn(function()
@@ -743,6 +858,7 @@ local function copyword(bruteforce)
             end
         else
             if matchLabel then matchLabel:Set("Current Match: Not Found") end
+            print("❌ [Search]: No available words found for prompt: " .. tostring(contains))
             lastHandledPrompt = ""
         end
     end
@@ -755,19 +871,25 @@ MainTab:CreateInput({
    Callback = function(Text) lettercap = tonumber(Text) or math_huge end,
 })
 
+local searchWorkerRunning = false
+
 MainTab:CreateToggle({
    Name = "Auto Search",
    CurrentValue = false,
    Callback = function(Value)
       autosearch = Value
-      if autosearch then
+      if autosearch and not searchWorkerRunning then
+          searchWorkerRunning = true
+          print("▶️ [Auto Search]: Worker Started")
+          
           task_spawn(function()
               local waitingCounter = 0
               while autosearch do 
                   task_wait(0.15)
+                  
                   local currentPrompt = GetLetters()
                   if currentPrompt == nil or currentPrompt:lower():find("waiting") then
-                      waitingCounter = waitingCounter + 1
+                      waitingCounter += 1
                       if waitingCounter >= 6 then
                           activeUpdateFn = nil 
                           waitingCounter = 0
@@ -775,15 +897,18 @@ MainTab:CreateToggle({
                   else
                       waitingCounter = 0
                   end
-                  pcall(copyword) 
+
+                  safeExecute("AutoSearch", copyword)
               end
+              searchWorkerRunning = false
+              print("⏹️ [Auto Search]: Worker Stopped")
           end)
       end
    end,
 })
 
 MainTab:CreateToggle({ 
-    Name = "Auto Type (Mobile VIM)", 
+    Name = "Auto Type (Mobile)", 
     CurrentValue = false, 
     Callback = function(Value) autotype = Value end 
 })
@@ -794,26 +919,34 @@ MainTab:CreateToggle({
     Callback = function(Value) instanttype = Value end 
 })
 
+local autoJoinWorkerRunning = false
+
 MainTab:CreateToggle({
     Name = "Auto Join Game",
     CurrentValue = false,
     Callback = function(Value)
         autojoin = Value
-        if autojoin and Games then
+        if autojoin and Games and not autoJoinWorkerRunning then
+            autoJoinWorkerRunning = true
             task_spawn(function()
                 if autoJoinDelay > 0 then task_wait(autoJoinDelay) end
                 resetRoundState()
-                pcall(function()
+                safeExecute("AutoJoin", function()
+                    print("🚪 [AutoJoin]: Attempting to join game...")
                     for i = -1, -20, -1 do 
                         Games.GameEvent:FireServer(i, "JoinGame") 
                     end
                 end)
+                autoJoinWorkerRunning = false
             end)
         end
     end
 })
 
-MainTab:CreateButton({ Name = "Search Word (Manual)", Callback = function() copyword(true) end })
+MainTab:CreateButton({ 
+    Name = "Search Word (Manual)", 
+    Callback = function() copyword(true) end 
+})
 
 -- === UI ELEMENTS (DICTIONARY TAB) ===
 DictionaryTab:CreateDropdown({
@@ -822,8 +955,11 @@ DictionaryTab:CreateDropdown({
    CurrentOption = {"Hyphenated / Short"},
    MultipleOptions = false,
    Callback = function(Option)
-      if type(Option) == "table" then wordPriorityMode = Option[1]
-      else wordPriorityMode = Option end
+      if type(Option) == "table" then
+          wordPriorityMode = Option[1]
+      else
+          wordPriorityMode = Option
+      end
    end,
 })
 
@@ -831,7 +967,10 @@ DictionaryTab:CreateDropdown({
 SettingsTab:CreateSlider({
    Name = "Auto Join Delay",
    Info = "Delay before auto joining game (1s to 5s)",
-   Range = {1, 5}, Increment = 1, Suffix = " sec", CurrentValue = 2,
+   Range = {1, 5},
+   Increment = 1,
+   Suffix = " sec",
+   CurrentValue = 2,
    Callback = function(Value) autoJoinDelay = Value end,
 })
 
@@ -844,41 +983,64 @@ SettingsTab:CreateToggle({
 
 SettingsTab:CreateSlider({
    Name = "Fuse Delay Target %",
-   Range = {1, 95}, Increment = 1, Suffix = "%", CurrentValue = 50,
+   Info = "Target % of fuse time to wait (1% to 95%)",
+   Range = {1, 95},
+   Increment = 1,
+   Suffix = "%",
+   CurrentValue = 50,
    Callback = function(Value) fusePercent = Value / 100 end,
 })
 
 SettingsTab:CreateSlider({
    Name = "Check Word Delay (Fallback)",
-   Range = {1, 20}, Increment = 1, Suffix = " (x0.1 sec)", CurrentValue = 10, 
-   Callback = function(Value) checkWordDelay = Value / 10 end,
+   Info = "Static delay if fuse not active (0.1s to 2.0s)",
+   Range = {1, 20}, 
+   Increment = 1,
+   Suffix = " (x0.1 sec)",
+   CurrentValue = 10, 
+   Callback = function(Value) fallbackDelaySeconds = Value / 10 end,
 })
 
 SettingsTab:CreateSlider({
    Name = "Typing WPM",
-   Range = {100, 1000}, Increment = 50, Suffix = " WPM", CurrentValue = 500,
+   Info = "Words Per Minute speed",
+   Range = {100, 1000},
+   Increment = 50,
+   Suffix = " WPM",
+   CurrentValue = 500,
    Callback = function(Value)
       typingWPM = Value
-      speedWordDelay = 60 / (typingWPM * 5)
+      speedWordDelaySeconds = 60 / (typingWPM * 5)
    end,
 })
 
 SettingsTab:CreateSlider({
    Name = "RNG Variation",
-   Range = {0, 100}, Increment = 5, Suffix = "%", CurrentValue = 0,
-   Callback = function(Value) rngVariationPercent = Value end,
+   Info = "Random speed & delay variation (+-0% to +-100%)",
+   Range = {0, 100},
+   Increment = 5,
+   Suffix = "%",
+   CurrentValue = 0,
+   Callback = function(Value)
+      rngVariationPercent = Value
+   end,
 })
 
 SettingsTab:CreateToggle({
    Name = "Human Jittering",
    CurrentValue = false,
+   Info = "Slight realistic delay fluctuations",
    Callback = function(Value) jitterEnabled = Value end,
 })
 
 SettingsTab:CreateSlider({
    Name = "Jitter Delay",
-   Range = {1, 20}, Increment = 1, Suffix = " ms", CurrentValue = 5, 
-   Callback = function(Value) jitterIntensity = Value / 100 end,
+   Info = "Jittering strength",
+   Range = {1, 20}, 
+   Increment = 1,
+   Suffix = " ms", 
+   CurrentValue = 5, 
+   Callback = function(Value) jitterSeconds = Value / 1000 end,
 })
 
 -- === STATS PANEL ===
@@ -896,13 +1058,21 @@ if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
+            print("📩 [Network]: RegisterGame Event Fired for RoomID: " .. tostring(gameRoomID))
             resetRoundState()
-            task.delay(1, function() activeUpdateFn = nil end)
+            
+            task.delay(1, function()
+                activeUpdateFn = nil
+            end)
 
-            if autojoin then 
+            if autojoin and not autoJoinWorkerRunning then 
+                autoJoinWorkerRunning = true
                 task_spawn(function()
                     if autoJoinDelay > 0 then task_wait(autoJoinDelay) end
-                    pcall(function() Games.GameEvent:FireServer(gameRoomID, "JoinGame") end)
+                    safeExecute("RegisterGameJoin", function()
+                        Games.GameEvent:FireServer(gameRoomID, "JoinGame") 
+                    end)
+                    autoJoinWorkerRunning = false
                 end)
             end
         end)
@@ -913,11 +1083,8 @@ end
 task_spawn(function()
     while task_wait(1) do
         local elapsed = os_time() - startTime
-        local hours = math_floor(elapsed / 3600)
-        local minutes = math_floor((elapsed % 3600) / 60)
-        local seconds = elapsed % 60
         if elapsedLabel then
-            elapsedLabel:Set(string.format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds))
+            elapsedLabel:Set("Elapsed Time: " .. formatElapsedTime(elapsed))
         end
     end
 end)
