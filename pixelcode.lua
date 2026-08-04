@@ -14,6 +14,7 @@ local task_wait = task.wait
 local os_time = os.time
 local os_clock = os.clock
 local pcall = pcall
+local xpcall = xpcall
 local type = type
 local typeof = typeof
 local tostring = tostring
@@ -23,6 +24,7 @@ local pairs = pairs
 local getgc = getgc
 local debug_getinfo = debug.getinfo
 local debug_getupvalues = debug.getupvalues
+local debug_traceback = debug.traceback
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -81,6 +83,7 @@ print("✅ [Bro-Pixel Auth]: Authorization successful: " .. tostring(authMessage
 getgenv().deletewhendupefound = true
 
 local elapsedLabel, turnsLabel, promptLabel, solutionsLabel, matchLabel, fusionLabel
+local lastWonLabel, winstreakLabel
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
@@ -109,15 +112,65 @@ local Window = Rayfield:CreateWindow({
 
 local MainTab = Window:CreateTab("Main", nil)
 local DictionaryTab = Window:CreateTab("Dictionary", nil)
+local LogsTab = Window:CreateTab("Logs", nil)
 local SettingsTab = Window:CreateTab("Settings", nil)
 
 local statusLabel = MainTab:CreateLabel("Loading and indexing dictionary...")
+
+-- === ACTIVITY & HEARTBEAT TRACKING ===
+local lastActivity = os_clock()
+
+local function updateActivity()
+    lastActivity = os_clock()
+end
+
+-- === LOGS & WINSTREAK STATE ===
+local currentWinstreak = 0
+local lastWinnerName = "None"
+
+lastWonLabel = LogsTab:CreateLabel("Last won: None")
+winstreakLabel = LogsTab:CreateLabel("Winstreak: None")
+
+local function updateGameLogs(winnerName)
+    if not winnerName or winnerName == "" then return end
+
+    lastWinnerName = winnerName
+    if lastWonLabel then
+        lastWonLabel:Set("Last won: " .. tostring(lastWinnerName))
+    end
+
+    local localPlayer = Players.LocalPlayer
+    local myName = localPlayer and localPlayer.Name
+    local formattedTime = os.date("%I.%M %p"):lower()
+
+    if myName and winnerName:lower() == myName:lower() then
+        currentWinstreak = currentWinstreak + 1
+        if winstreakLabel then
+            winstreakLabel:Set("Winstreak: going for " .. tostring(currentWinstreak + 1) .. " winstreak…")
+        end
+        print("🏆 [LOGS]: Victory! Winstreak count: " .. tostring(currentWinstreak))
+    else
+        if currentWinstreak > 0 then
+            if winstreakLabel then
+                winstreakLabel:Set("Winstreak failed (time - " .. formattedTime .. ")")
+            end
+            print("❌ [LOGS]: Winstreak broken at " .. formattedTime)
+        else
+            if winstreakLabel then
+                winstreakLabel:Set("Winstreak: None")
+            end
+        end
+        currentWinstreak = 0
+    end
+end
+
+getgenv().UpdateLogs = updateGameLogs
 
 local globalWordsList = {} 
 local PromptIndex = {}
 
 local function loadDictionaryAsync(url)
-    task.spawn(function()
+    task_spawn(function()
         local success, raw = pcall(function() return game:HttpGet(url) end)
         if not success or not raw then 
             statusLabel:Set("Failed to load dictionary!")
@@ -154,7 +207,7 @@ local function loadDictionaryAsync(url)
                 
                 if total % 4000 == 0 then
                     statusLabel:Set("Indexing: " .. total .. " words...")
-                    task.wait()
+                    task_wait()
                 end
             end
         end
@@ -215,7 +268,7 @@ end
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
--- === INTERCEPT AND MEMORIZE OTHER PLAYERS' WORDS ===
+-- === INTERCEPT NETWORK EVENTS ===
 local Network = ReplicatedStorage:FindFirstChild("Network")
 if Network then
     local gameEvent = Network:FindFirstChild("GameEvent", true)
@@ -232,9 +285,12 @@ if Network then
             local isTypingEvent = false
             
             for i = 1, #args do
-                if type(args[i]) == "string" and args[i]:lower() == "typingevent" then
-                    isTypingEvent = true
-                    break
+                local arg = args[i]
+                if type(arg) == "string" then
+                    local lowerArg = arg:lower()
+                    if lowerArg == "typingevent" then
+                        isTypingEvent = true
+                    end
                 end
             end
 
@@ -262,6 +318,103 @@ if Network then
         end)
     end
 end
+
+-- === GUI WINNER DETECTION (EVENT-DRIVEN & SELF-HEALING) ===
+task_spawn(function()
+    while true do
+        xpcall(function()
+            local lastProcessedText = ""
+            local currentConnection = nil
+
+            local function cleanText(str)
+                if not str then return "" end
+                str = str:gsub("<[^>]+>", "")
+                str = str:gsub("[\r\n\t]", " ")
+                str = str:gsub("%s+", " ")
+                return str:match("^%s*(.-)%s*$") or ""
+            end
+
+            local function extractWinner(cleaned)
+                if not cleaned or cleaned == "" then return nil end
+                return cleaned:match("(.-)%s+won the last game")
+                    or cleaned:match("(.-)%s+won the game")
+                    or cleaned:match("Winner:%s*(.+)")
+                    or cleaned:match("(.-)%s+won!")
+            end
+
+            local function processText(rawText)
+                print("RAW TEXT:", rawText)
+                if not rawText or rawText == "" then return end
+
+                local cleaned = cleanText(rawText)
+                if cleaned == "" or cleaned == lastProcessedText then return end
+
+                local winnerName = extractWinner(cleaned)
+                if winnerName and winnerName ~= "" then
+                    lastProcessedText = cleaned
+                    print("🏆 [GUI WINNER]: Detected winner ->", winnerName)
+                    if updateGameLogs then
+                        updateGameLogs(winnerName)
+                    end
+                end
+            end
+
+            local function findSubtitle()
+                local player = Players.LocalPlayer
+                if not player then return nil end
+
+                local playerGui = player:FindFirstChild("PlayerGui")
+                if not playerGui then return nil end
+
+                for _, obj in ipairs(playerGui:GetDescendants()) do
+                    if obj:IsA("TextLabel") and obj.Name == "Subtitle" then
+                        return obj
+                    end
+                end
+                return nil
+            end
+
+            while true do
+                local subtitle = findSubtitle()
+                print("Subtitle object:", subtitle)
+
+                if subtitle and subtitle:IsA("TextLabel") then
+                    pcall(function()
+                        processText(subtitle.Text)
+                    end)
+
+                    if currentConnection then
+                        currentConnection:Disconnect()
+                        currentConnection = nil
+                    end
+
+                    local success, conn = pcall(function()
+                        return subtitle:GetPropertyChangedSignal("Text"):Connect(function()
+                            processText(subtitle.Text)
+                        end)
+                    end)
+
+                    if success and conn then
+                        currentConnection = conn
+                        while subtitle and subtitle.Parent and subtitle:IsDescendantOf(game) do
+                            task_wait(1)
+                        end
+                    end
+                end
+
+                if currentConnection then
+                    currentConnection:Disconnect()
+                    currentConnection = nil
+                end
+
+                task_wait(1)
+            end
+        end, function(err)
+            warn("[CRASH] Winner Detection loop errored: " .. tostring(err) .. "\n" .. debug_traceback())
+        end)
+        task_wait(2)
+    end
+end)
 
 -- === DYNAMIC GC FUNCTION SEARCH (FAST, SAFE & SELF-RESETTING) ===
 local activeUpdateFn = nil
@@ -347,7 +500,7 @@ local function waitFuseProgress(targetSession)
     
     if not tbl or not tbl.FuseStart or tbl.FuseStart <= 1000 or not tbl.FuseRate or tbl.FuseRate == 0 then
         if checkWordDelay > 0 and not instanttype then
-            task.wait(applyRngVariation(checkWordDelay))
+            task_wait(applyRngVariation(checkWordDelay))
         end
         return
     end
@@ -360,13 +513,13 @@ local function waitFuseProgress(targetSession)
     local targetWaitSeconds = totalFuseTime * fusePercent
     targetWaitSeconds = math.max(0, targetWaitSeconds - 0.05)
 
-    local localStart = os.clock()
+    local localStart = os_clock()
 
     while typingSessionId == targetSession do
         local tblCurrent = getInfoTable()
         if not tblCurrent or tblCurrent.FuseStart ~= fuseStart then break end
 
-        local elapsed = os.clock() - localStart
+        local elapsed = os_clock() - localStart
 
         currentFusionStats = string.format("%.2fs / %.2fs", math.min(elapsed, totalFuseTime), totalFuseTime)
         if fusionLabel then 
@@ -375,7 +528,7 @@ local function waitFuseProgress(targetSession)
 
         if elapsed >= targetWaitSeconds then break end
         
-        task.wait(0.01)
+        task_wait(0.01)
     end
 end
 
@@ -390,6 +543,7 @@ local function resetRoundState()
     wasMyTurn = false
     isTyping = false
     isSubmitting = false
+    updateActivity()
     
     pcall(function()
         collectgarbage("collect")
@@ -403,8 +557,6 @@ end
 
 -- === CORE DATA GETTERS ===
 
-local waitingStreak = 0
-
 local function GetLetters()
     local fn = getActiveUpdateInfoFrame()
     if fn then
@@ -415,18 +567,8 @@ local function GetLetters()
                 end
             end
         end)
-        
-        if s and type(r) == "string" and r ~= "" then
-            local lowerR = r:lower()
-            if not lowerR:find("waiting") then 
-                waitingStreak = 0
-                return r 
-            else
-                waitingStreak = waitingStreak + 1
-                if waitingStreak >= 3 then
-                    activeUpdateFn = nil
-                end
-            end
+        if s and type(r) == "string" and r ~= "" and not r:lower():find("waiting") then 
+            return r 
         end
     end
 
@@ -437,9 +579,7 @@ local function GetLetters()
             local target = playerGui:FindFirstChild(guiName) or playerGui
             local promptLbl = target:FindFirstChild("PromptLabel", true) or target:FindFirstChild("Prompt", true)
             if promptLbl and promptLbl:IsA("TextLabel") and promptLbl.Visible and promptLbl.Text ~= "" then
-                if not promptLbl.Text:lower():find("waiting") then
-                    return promptLbl.Text
-                end
+                return promptLbl.Text
             end
         end
     end
@@ -649,6 +789,7 @@ local function typeWordMobile(word, targetPrompt)
             
             totalTurns = totalTurns + 1
             if turnsLabel then turnsLabel:Set("Total Turns: " .. totalTurns) end
+            updateActivity()
             print("✅ [DEBUG - Type]: Word successfully submitted: " .. tostring(word))
         else
             if textBox then textBox.Text = "" end
@@ -714,9 +855,19 @@ local function copyword(bruteforce)
         isSubmitting = false
     end
 
+    -- 🔍 Подробная логировка блокировок
+    if isTyping then
+        print("[BLOCK] isTyping")
+        return
+    end
+    if isSubmitting then
+        print("[BLOCK] isSubmitting")
+        return
+    end
     local focusedBox = UserInputService:GetFocusedTextBox()
-    if isTyping or isSubmitting or (focusedBox and focusedBox ~= getGameTextBox()) then 
-        return 
+    if focusedBox and focusedBox ~= getGameTextBox() then
+        print("[BLOCK] FocusedTextBox:", focusedBox:GetFullName())
+        return
     end
 
     wasMyTurn = true
@@ -724,6 +875,7 @@ local function copyword(bruteforce)
     if contains ~= lastHandledPrompt or (lastFuseStart > 0 and currentFuseStart ~= lastFuseStart) or bruteforce then
         lastHandledPrompt = contains
         lastFuseStart = currentFuseStart
+        updateActivity()
         print("🎯 [DEBUG - Search]: New turn detected! Prompt: " .. tostring(contains))
         
         if promptLabel then promptLabel:Set("Current Prompt: " .. contains:upper()) end
@@ -820,6 +972,7 @@ local function copyword(bruteforce)
 
         if finalword then
             sessionUsedWords[finalword] = true
+            updateActivity()
             if matchLabel then matchLabel:Set("Current Match: " .. finalword:upper()) end
             print("💡 [DEBUG - Search]: Picked word: " .. tostring(finalword) .. " (Mode: " .. tostring(wordPriorityMode) .. ")")
             
@@ -851,25 +1004,32 @@ MainTab:CreateToggle({
       if autosearch then
           print("▶️ [DEBUG]: Auto Search Enabled")
           task_spawn(function()
-              local waitingCounter = 0
-              while autosearch do 
-                  task_wait(0.15)
-                  
-                  local currentPrompt = GetLetters()
-                  if currentPrompt == nil or currentPrompt:lower():find("waiting") then
-                      waitingCounter = waitingCounter + 1
-                      if waitingCounter >= 6 then
-                          if activeUpdateFn ~= nil then
-                              print("⏳ [DEBUG - GC]: Force clearing cached updateInfoFrame due to timeout.")
+              while autosearch do
+                  xpcall(function()
+                      local waitingCounter = 0
+                      while autosearch do 
+                          task_wait(0.15)
+                          
+                          local currentPrompt = GetLetters()
+                          if currentPrompt == nil or currentPrompt:lower():find("waiting") then
+                              waitingCounter = waitingCounter + 1
+                              if waitingCounter >= 6 then
+                                  if activeUpdateFn ~= nil then
+                                      print("⏳ [DEBUG - GC]: Force clearing cached updateInfoFrame due to timeout.")
+                                  end
+                                  activeUpdateFn = nil 
+                                  waitingCounter = 0
+                              end
+                          else
+                              waitingCounter = 0
                           end
-                          activeUpdateFn = nil 
-                          waitingCounter = 0
-                      end
-                  else
-                      waitingCounter = 0
-                  end
 
-                  pcall(copyword) 
+                          pcall(copyword) 
+                      end
+                  end, function(err)
+                      warn("[CRASH] Auto Search loop errored: " .. tostring(err) .. "\n" .. debug_traceback())
+                  end)
+                  task_wait(1)
               end
               print("⏹️ [DEBUG]: Auto Search Loop Ended")
           end)
@@ -1062,32 +1222,34 @@ end
 
 -- === TIMER LOOP ===
 task_spawn(function()
-    while task_wait(1) do
-        local elapsed = os_time() - startTime
-        local hours = math_floor(elapsed / 3600)
-        local minutes = math_floor((elapsed % 3600) / 60)
-        local seconds = elapsed % 60
-        if elapsedLabel then
-            elapsedLabel:Set(string.format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds))
-        end
+    while true do
+        xpcall(function()
+            while task_wait(1) do
+                local elapsed = os_time() - startTime
+                local hours = math_floor(elapsed / 3600)
+                local minutes = math_floor((elapsed % 3600) / 60)
+                local seconds = elapsed % 60
+                if elapsedLabel then
+                    elapsedLabel:Set(string.format("Elapsed Time: %02d:%02d:%02d", hours, minutes, seconds))
+                end
+            end
+        end, function(err)
+            warn("[CRASH] Timer Loop errored: " .. tostring(err))
+        end)
+        task_wait(1)
     end
 end)
 
--- === AGGRESSIVE WAITING WATCHDOG ===
+-- === AGGRESSIVE WATCHDOG & INACTIVITY RESET ===
 task_spawn(function()
     local waitingSince = nil
 
-    while task_wait(0.5) do
-        if not autosearch then
-            waitingSince = nil
-        else
-            local prompt = GetLetters()
-
-            if not prompt or prompt:lower():find("waiting") then
-                waitingSince = waitingSince or os_clock()
-
-                if os_clock() - waitingSince >= 3.5 then
-                    print("⚠️ [WATCHDOG]: Waiting detected for 3.5s. Performing recovery...")
+    while true do
+        xpcall(function()
+            while task_wait(1) do
+                -- 🚨 Проверка на неактивность (больше 120 секунд)
+                if autosearch and (os_clock() - lastActivity > 120) then
+                    warn("[WATCHDOG] No activity detected for 120 seconds. Performing emergency reset!")
 
                     typingSessionId = typingSessionId + 1
                     isTyping = false
@@ -1098,29 +1260,74 @@ task_spawn(function()
                     lastFuseStart = 0
                     wasMyTurn = false
 
+                    updateActivity()
+
                     pcall(function()
                         collectgarbage("collect")
                     end)
 
-                    task_wait(0.1)
+                    task_wait(0.5)
 
                     pcall(function()
                         getActiveUpdateInfoFrame()
                     end)
 
-                    task_wait(0.1)
+                    task_wait(0.2)
 
                     pcall(function()
                         copyword(true)
                     end)
-
-                    waitingSince = nil
-
-                    print("✅ [WATCHDOG]: Recovery finished.")
                 end
-            else
-                waitingSince = nil
+
+                -- 🚨 Стандартный чек на "waiting..."
+                if not autosearch then
+                    waitingSince = nil
+                else
+                    local prompt = GetLetters()
+
+                    if prompt and type(prompt) == "string" and prompt:lower():find("waiting") then
+                        waitingSince = waitingSince or os_clock()
+
+                        if os_clock() - waitingSince >= 30 then
+                            print("⚠️ [WATCHDOG]: Waiting detected for 30 seconds. Performing full recovery...")
+
+                            typingSessionId = typingSessionId + 1
+                            isTyping = false
+                            isSubmitting = false
+
+                            activeUpdateFn = nil
+                            lastHandledPrompt = ""
+                            lastFuseStart = 0
+                            wasMyTurn = false
+
+                            pcall(function()
+                                collectgarbage("collect")
+                            end)
+
+                            task_wait(0.5)
+
+                            pcall(function()
+                                getActiveUpdateInfoFrame()
+                            end)
+
+                            task_wait(0.2)
+
+                            pcall(function()
+                                copyword(true)
+                            end)
+
+                            waitingSince = nil
+
+                            print("✅ [WATCHDOG]: Recovery finished.")
+                        end
+                    else
+                        waitingSince = nil
+                    end
+                end
             end
-        end
+        end, function(err)
+            warn("[CRASH] Watchdog loop errored: " .. tostring(err) .. "\n" .. debug_traceback())
+        end)
+        task_wait(1)
     end
 end)
