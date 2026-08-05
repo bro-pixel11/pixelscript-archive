@@ -21,7 +21,7 @@ local tostring      = tostring
 local tonumber      = tonumber
 local ipairs        = ipairs
 local pairs         = pairs
-local getreg        = debug.getregistry or getreg
+local getgc         = getgc
 local debug_getinfo = debug.getinfo
 local debug_getupvalues = debug.getupvalues
 
@@ -279,20 +279,25 @@ if Network then
     end
 end
 
--- === REGISTRY-BASED ZERO-STUTTER GETTERS ===
+-- === HYBRID FAST & STABLE GC GETTERS (NO FPS DROP) ===
 local function GetTurn()
     local s, r = pcall(function()
-        local reg = getreg()
-        for i = 1, #reg do
-            local v = reg[i]
-            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                local upvalues = debug_getupvalues(v)
-                for j = 1, #upvalues do
-                    local vv = upvalues[j]
-                    if type(vv) == "table" and vv.PlayerID ~= nil then 
-                        return vv.PlayerID 
+        local gc = getgc()
+        local count = 0
+        for i = 1, #gc do
+            local v = gc[i]
+            if type(v) == "function" then
+                count = count + 1
+                if debug_getinfo(v).name == "updateInfoFrame" then
+                    local upvalues = debug_getupvalues(v)
+                    for j = 1, #upvalues do
+                        local vv = upvalues[j]
+                        if type(vv) == "table" and vv.PlayerID ~= nil then 
+                            return vv.PlayerID 
+                        end
                     end
                 end
+                if count % 2500 == 0 then task_wait() end
             end
         end
     end)
@@ -302,17 +307,22 @@ end
 
 local function GetLetters()
     local s, r = pcall(function()
-        local reg = getreg()
-        for i = 1, #reg do
-            local v = reg[i]
-            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                local upvalues = debug_getupvalues(v)
-                for j = 1, #upvalues do
-                    local vv = upvalues[j]
-                    if type(vv) == "table" and vv.Prompt ~= nil then 
-                        return vv.Prompt 
+        local gc = getgc()
+        local count = 0
+        for i = 1, #gc do
+            local v = gc[i]
+            if type(v) == "function" then
+                count = count + 1
+                if debug_getinfo(v).name == "updateInfoFrame" then
+                    local upvalues = debug_getupvalues(v)
+                    for j = 1, #upvalues do
+                        local vv = upvalues[j]
+                        if type(vv) == "table" and vv.Prompt ~= nil then 
+                            return vv.Prompt 
+                        end
                     end
                 end
+                if count % 2500 == 0 then task_wait() end
             end
         end
     end)
@@ -322,17 +332,22 @@ end
 
 local function getInfoTable()
     local s, r = pcall(function()
-        local reg = getreg()
-        for i = 1, #reg do
-            local v = reg[i]
-            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                local upvalues = debug_getupvalues(v)
-                for j = 1, #upvalues do
-                    local vv = upvalues[j]
-                    if type(vv) == "table" and vv.FuseStart ~= nil then
-                        return vv
+        local gc = getgc()
+        local count = 0
+        for i = 1, #gc do
+            local v = gc[i]
+            if type(v) == "function" then
+                count = count + 1
+                if debug_getinfo(v).name == "updateInfoFrame" then
+                    local upvalues = debug_getupvalues(v)
+                    for j = 1, #upvalues do
+                        local vv = upvalues[j]
+                        if type(vv) == "table" and vv.FuseStart ~= nil then 
+                            return vv 
+                        end
                     end
                 end
+                if count % 2500 == 0 then task_wait() end
             end
         end
     end)
@@ -695,7 +710,7 @@ local function copyword(bruteforce)
     end
 end
 
--- === DYNAMIC ADAPTIVE SEARCH LOOP CONTROL ===
+-- === SINGLETON AUTO SEARCH LOOP CONTROL ===
 local isAutoSearchLoopRunning = false
 
 local function ensureAutoSearchLoop()
@@ -703,7 +718,7 @@ local function ensureAutoSearchLoop()
     isAutoSearchLoopRunning = true
 
     task_spawn(function()
-        print("▶️ [AUTO SEARCH]: Smooth registry loop started.")
+        print("▶️ [AUTO SEARCH]: Single persistent loop started.")
 
         while autosearch do
             xpcall(function()
@@ -713,12 +728,12 @@ local function ensureAutoSearchLoop()
                 end
 
                 copyword()
-
+                
                 local currentTurnId = GetTurn()
                 if currentTurnId ~= LocalPlayer.UserId then
-                    task_wait(0.45)
+                    task_wait(0.35)
                 else
-                    task_wait(0.20)
+                    task_wait(0.15)
                 end
             end, function(err)
                 warn("[AUTO SEARCH LOOP CRASH]: " .. tostring(err))
