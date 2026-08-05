@@ -225,7 +225,7 @@ local function applyRngVariation(baseValue)
     return result < 0 and 0 or result
 end
 
--- === NETWORK EVENTS INITIALIZATION (SINGLETON LISTENERS) ===
+-- === NETWORK EVENTS INITIALIZATION ===
 local Games = ReplicatedStorage:WaitForChild("Network", 10)
 if Games then Games = Games:WaitForChild("Games", 10) end
 
@@ -279,99 +279,8 @@ if Network then
     end
 end
 
--- === DYNAMIC GC FUNCTION SEARCH WITH BLACKLIST & DOM PRIORITY ===
-local activeUpdateFn = nil
-local deadFunctions = {}
-
-local function isValidStructure(fn)
-    if type(fn) ~= "function" then return false end
-    
-    local isTargetName = false
-    pcall(function()
-        if debug_getinfo(fn).name == "updateInfoFrame" then
-            isTargetName = true
-        end
-    end)
-    if not isTargetName then return false end
-    
-    local hasPrompt = false
-    local hasPlayerID = false
-    
-    pcall(function()
-        for _, vv in pairs(debug_getupvalues(fn)) do
-            if type(vv) == "table" then
-                if vv.Prompt ~= nil then hasPrompt = true end
-                if vv.PlayerID ~= nil then hasPlayerID = true end
-            end
-        end
-    end)
-    
-    return hasPrompt and hasPlayerID
-end
-
-local function isFnAlive(fn)
-    if not fn or deadFunctions[fn] or not isValidStructure(fn) then return false end
-    local alive = false
-    pcall(function()
-        for _, vv in pairs(debug_getupvalues(fn)) do
-            if type(vv) == "table" and vv.Prompt ~= nil then
-                if type(vv.Prompt) == "string" then
-                    alive = true
-                end
-            end
-        end
-    end)
-    return alive
-end
-
-local function getActiveUpdateInfoFrame()
-    if activeUpdateFn and isFnAlive(activeUpdateFn) then
-        return activeUpdateFn
-    end
-
-    activeUpdateFn = nil
-    for _, v in pairs(getgc()) do
-        if type(v) == "function" and not deadFunctions[v] and isValidStructure(v) and isFnAlive(v) then
-            local isWaiting = false
-            pcall(function()
-                for _, vv in pairs(debug_getupvalues(v)) do
-                    if type(vv) == "table" and vv.Prompt ~= nil then
-                        if type(vv.Prompt) == "string" and vv.Prompt:lower():find("waiting") then
-                            isWaiting = true
-                        end
-                    end
-                end
-            end)
-
-            if not isWaiting then
-                activeUpdateFn = v
-                print("🔍 [DEBUG - GC]: Found VALID active updateInfoFrame function!")
-                return v
-            end
-        end
-    end
-    
-    return nil
-end
-
-local function getInfoTable()
-    local fn = getActiveUpdateInfoFrame()
-    if fn then
-        local s, r = pcall(function()
-            for _, vv in pairs(debug_getupvalues(fn)) do
-                if type(vv) == "table" and vv.FuseStart ~= nil then 
-                    return vv 
-                end
-            end
-        end)
-        if s and type(r) == "table" then return r end
-    end
-    return nil
-end
-
--- === DOM-FIRST GETTERS (V2 PATTERN) WITH FALLBACK ===
+-- === PURE V2 GETTERS (GETTURN & GETLETTERS) ===
 local function GetTurn()
-    -- 1. Fast DOM Access (Из V2)
     local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
         local gameUI = playerGui:FindFirstChild("GameUI")
@@ -383,52 +292,62 @@ local function GetTurn()
         end
     end
 
-    -- 2. Fallback to GC
-    local fn = getActiveUpdateInfoFrame()
-    if fn then
-        local s, r = pcall(function()
-            for _, vv in pairs(debug_getupvalues(fn)) do
-                if type(vv) == "table" and vv.PlayerID ~= nil then 
-                    return vv.PlayerID 
+    local s, r = pcall(function()
+        for _, v in pairs(getgc()) do
+            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
+                for __, vv in ipairs(debug_getupvalues(v)) do
+                    if type(vv) == "table" and vv.PlayerID ~= nil then 
+                        return vv.PlayerID 
+                    end
                 end
             end
-        end)
-        if s and r ~= nil then return r end
-    end
+        end
+    end)
+    if s and r then return r end
     return nil
 end
 
 local function GetLetters()
-    -- 1. Fast DOM Access (Из V2)
+    local s, r = pcall(function()
+        for _, v in pairs(getgc()) do
+            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
+                for __, vv in ipairs(debug_getupvalues(v)) do
+                    if type(vv) == "table" and vv.Prompt ~= nil then 
+                        return vv.Prompt 
+                    end
+                end
+            end
+        end
+    end)
+    if s and r then return r end
+
     local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
         for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "PlayerGui"}) do
             local target = playerGui:FindFirstChild(guiName) or playerGui
             local promptLbl = target:FindFirstChild("PromptLabel", true) or target:FindFirstChild("Prompt", true)
             if promptLbl and promptLbl:IsA("TextLabel") and promptLbl.Visible and promptLbl.Text ~= "" then
-                local txt = promptLbl.Text
-                if not txt:lower():find("waiting") then
-                    return txt
-                end
+                return promptLbl.Text
             end
         end
     end
 
-    -- 2. Fallback to GC
-    local fn = getActiveUpdateInfoFrame()
-    if fn then
-        local s, r = pcall(function()
-            for _, vv in pairs(debug_getupvalues(fn)) do
-                if type(vv) == "table" and vv.Prompt ~= nil then 
-                    return vv.Prompt 
+    return ""
+end
+
+local function getInfoTable()
+    local s, r = pcall(function()
+        for _, v in pairs(getgc()) do
+            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
+                for __, vv in ipairs(debug_getupvalues(v)) do
+                    if type(vv) == "table" and vv.FuseStart ~= nil then
+                        return vv
+                    end
                 end
             end
-        end)
-        if s and type(r) == "string" and r ~= "" and not r:lower():find("waiting") then 
-            return r 
         end
-    end
-
+    end)
+    if s and type(r) == "table" then return r end
     return nil
 end
 
@@ -509,12 +428,6 @@ end
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
     print("🔄 [DEBUG - Game Reset]: Resetting Round State...")
-    
-    if activeUpdateFn then
-        deadFunctions[activeUpdateFn] = true
-    end
-    
-    activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
     sessionUsedWords = {} 
     lastHandledPrompt = ""
@@ -530,7 +443,7 @@ local function resetRoundState()
     if fusionLabel then fusionLabel:Set("Fusion Progress: 0.00s / 0.00s") end
 end
 
--- === TYPING LOGIC (WITH GUARANTEED STATE CLEANUP) ===
+-- === TYPING LOGIC ===
 local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
@@ -683,7 +596,7 @@ local function typeWordMobile(word, targetPrompt)
     end
 end
 
--- === WORD SEARCH LOGIC (REUSED BUFFERS & CHAT SAFEGUARD) ===
+-- === WORD SEARCH LOGIC ===
 local function copyword(bruteforce)
     local contains, isMyTurn = getGameStatus()
     local tbl = getInfoTable()
@@ -817,23 +730,10 @@ local function ensureAutoSearchLoop()
 
     task_spawn(function()
         print("▶️ [AUTO SEARCH]: Single persistent loop started.")
-        local waitingCounter = 0
 
         while autosearch do
             xpcall(function()
                 task_wait(0.15)
-                
-                local currentPrompt = GetLetters()
-                if currentPrompt == nil or currentPrompt:lower():find("waiting") then
-                    waitingCounter = waitingCounter + 1
-                    if waitingCounter >= 6 then
-                        activeUpdateFn = nil 
-                        waitingCounter = 0
-                    end
-                else
-                    waitingCounter = 0
-                end
-
                 copyword()
             end, function(err)
                 warn("[AUTO SEARCH LOOP CRASH]: " .. tostring(err))
@@ -1022,17 +922,13 @@ matchLabel = MainTab:CreateLabel("Current Match: None")
 fusionLabel = MainTab:CreateLabel("Fusion Progress: 0.00s / 0.00s")
 MainTab:CreateSection("------------------")
 
--- === BACKGROUND AUTO JOIN THREAD (SINGLETON LISTENER) ===
+-- === BACKGROUND AUTO JOIN THREAD ===
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
         registerGame.OnClientEvent:Connect(function(gameRoomID)
             print("📩 [DEBUG - Network]: RegisterGame Event Fired for RoomID: " .. tostring(gameRoomID))
             resetRoundState()
-            
-            task.delay(1, function()
-                activeUpdateFn = nil
-            end)
 
             if autojoin then 
                 task_spawn(function()
@@ -1046,7 +942,7 @@ if Games then
     end
 end
 
--- === TIMER LOOP (SINGLETON THREAD) ===
+-- === TIMER LOOP ===
 task_spawn(function()
     while true do
         xpcall(function()
@@ -1064,4 +960,4 @@ task_spawn(function()
         end)
         task_wait(1)
     end
-    end)      
+end)
