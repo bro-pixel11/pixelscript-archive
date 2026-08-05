@@ -279,19 +279,8 @@ if Network then
     end
 end
 
--- === PURE V2 GETTERS (GETTURN & GETLETTERS) ===
+-- === PURE V2 GETTERS WITH EARLY EXIT (NO WAITING, NO FPS DROPS) ===
 local function GetTurn()
-    local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if playerGui then
-        local gameUI = playerGui:FindFirstChild("GameUI")
-        if gameUI then
-            local infoFrame = gameUI:FindFirstChild("InfoFrame", true)
-            if infoFrame and infoFrame:FindFirstChild("PlayerID") then
-                return infoFrame.PlayerID.Value
-            end
-        end
-    end
-
     local s, r = pcall(function()
         for _, v in pairs(getgc()) do
             if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
@@ -303,7 +292,7 @@ local function GetTurn()
             end
         end
     end)
-    if s and r then return r end
+    if s and r ~= nil then return r end
     return nil
 end
 
@@ -311,7 +300,7 @@ local function GetLetters()
     local s, r = pcall(function()
         for _, v in pairs(getgc()) do
             if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                for __, vv in ipairs(debug_getupvalues(v)) do
+                for __, vv in pairs(debug_getupvalues(v)) do
                     if type(vv) == "table" and vv.Prompt ~= nil then 
                         return vv.Prompt 
                     end
@@ -319,19 +308,7 @@ local function GetLetters()
             end
         end
     end)
-    if s and r then return r end
-
-    local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if playerGui then
-        for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "PlayerGui"}) do
-            local target = playerGui:FindFirstChild(guiName) or playerGui
-            local promptLbl = target:FindFirstChild("PromptLabel", true) or target:FindFirstChild("Prompt", true)
-            if promptLbl and promptLbl:IsA("TextLabel") and promptLbl.Visible and promptLbl.Text ~= "" then
-                return promptLbl.Text
-            end
-        end
-    end
-
+    if s and type(r) == "string" then return r end
     return ""
 end
 
@@ -362,21 +339,6 @@ local function getGameStatus()
 
     local currentTurnId = GetTurn()
     local isMyTurn = (currentTurnId == LocalPlayer.UserId)
-
-    if currentTurnId == nil then
-        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-        if playerGui then
-            for _, v in pairs(playerGui:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Visible and v.Parent and v.Parent.Name ~= "Rayfield" then
-                    local text = v.Text:lower()
-                    if string_find(text, "quick") or string_find(text, "быстро") or string_find(text, "your turn") or string_find(text, "ходи") then
-                        isMyTurn = true
-                        break
-                    end
-                end
-            end
-        end
-    end
 
     return prompt, isMyTurn
 end
@@ -733,7 +695,7 @@ local function ensureAutoSearchLoop()
 
         while autosearch do
             xpcall(function()
-                task_wait(0.15)
+                task_wait(0.25)
                 copyword()
             end, function(err)
                 warn("[AUTO SEARCH LOOP CRASH]: " .. tostring(err))
