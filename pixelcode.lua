@@ -83,7 +83,6 @@ print("✅ [Bro-Pixel Auth]: Authorization successful: " .. tostring(authMessage
 getgenv().deletewhendupefound = true
 
 local elapsedLabel, turnsLabel, promptLabel, solutionsLabel, matchLabel, fusionLabel
-local lastWonLabel, winstreakLabel
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
@@ -112,7 +111,6 @@ local Window = Rayfield:CreateWindow({
 
 local MainTab = Window:CreateTab("Main", nil)
 local DictionaryTab = Window:CreateTab("Dictionary", nil)
-local LogsTab = Window:CreateTab("Logs", nil)
 local SettingsTab = Window:CreateTab("Settings", nil)
 
 local statusLabel = MainTab:CreateLabel("Loading and indexing dictionary...")
@@ -124,52 +122,10 @@ local function updateActivity()
     lastActivity = os_clock()
 end
 
--- === LOGS & WINSTREAK STATE ===
-local currentWinstreak = 0
-local lastWinnerName = "None"
-
-lastWonLabel = LogsTab:CreateLabel("Last won: None")
-winstreakLabel = LogsTab:CreateLabel("Winstreak: None")
-
-local function updateGameLogs(winnerName)
-    if not winnerName or winnerName == "" then return end
-
-    lastWinnerName = winnerName
-    if lastWonLabel then
-        lastWonLabel:Set("Last won: " .. tostring(lastWinnerName))
-    end
-
-    local myName = LocalPlayer and LocalPlayer.Name
-    local formattedTime = os.date("%I.%M %p"):lower()
-
-    if myName and winnerName:lower() == myName:lower() then
-        currentWinstreak = currentWinstreak + 1
-        if winstreakLabel then
-            winstreakLabel:Set("Winstreak: going for " .. tostring(currentWinstreak + 1) .. " winstreak…")
-        end
-        print("🏆 [LOGS]: Victory! Winstreak count: " .. tostring(currentWinstreak))
-    else
-        if currentWinstreak > 0 then
-            if winstreakLabel then
-                winstreakLabel:Set("Winstreak failed (time - " .. formattedTime .. ")")
-            end
-            print("❌ [LOGS]: Winstreak broken at " .. formattedTime)
-        else
-            if winstreakLabel then
-                winstreakLabel:Set("Winstreak: None")
-            end
-        end
-        currentWinstreak = 0
-    end
-end
-
-getgenv().UpdateLogs = updateGameLogs
-
 -- === DICTIONARY INDEXING & MEMORY BUFFERS ===
 local globalWordsList = {} 
 local PromptIndex = {}
 
--- Переиспользуемые буферы для поиска (GC Optimization)
 local validCandidatesBuffer = {}
 local specialMatchesBuffer = {}
 local normalMatchesBuffer = {}
@@ -323,8 +279,9 @@ if Network then
     end
 end
 
--- === DYNAMIC GC FUNCTION SEARCH (FAST CACHED FALLBACK) ===
+-- === DYNAMIC GC FUNCTION SEARCH WITH BLACKLIST & DOM PRIORITY ===
 local activeUpdateFn = nil
+local deadFunctions = {}
 
 local function isValidStructure(fn)
     if type(fn) ~= "function" then return false end
@@ -353,7 +310,7 @@ local function isValidStructure(fn)
 end
 
 local function isFnAlive(fn)
-    if not fn or not isValidStructure(fn) then return false end
+    if not fn or deadFunctions[fn] or not isValidStructure(fn) then return false end
     local alive = false
     pcall(function()
         for _, vv in pairs(debug_getupvalues(fn)) do
@@ -374,10 +331,23 @@ local function getActiveUpdateInfoFrame()
 
     activeUpdateFn = nil
     for _, v in pairs(getgc()) do
-        if isValidStructure(v) and isFnAlive(v) then
-            activeUpdateFn = v
-            print("🔍 [DEBUG - GC]: Found new active updateInfoFrame function!")
-            return v
+        if type(v) == "function" and not deadFunctions[v] and isValidStructure(v) and isFnAlive(v) then
+            local isWaiting = false
+            pcall(function()
+                for _, vv in pairs(debug_getupvalues(v)) do
+                    if type(vv) == "table" and vv.Prompt ~= nil then
+                        if type(vv.Prompt) == "string" and vv.Prompt:lower():find("waiting") then
+                            isWaiting = true
+                        end
+                    end
+                end
+            end)
+
+            if not isWaiting then
+                activeUpdateFn = v
+                print("🔍 [DEBUG - GC]: Found VALID active updateInfoFrame function!")
+                return v
+            end
         end
     end
     
@@ -399,9 +369,9 @@ local function getInfoTable()
     return nil
 end
 
--- === FAST DOM-FIRST GETTERS WITH GC FALLBACK (V2 HYBRID PATTERN) ===
+-- === DOM-FIRST GETTERS (V2 PATTERN) WITH FALLBACK ===
 local function GetTurn()
-    -- Fast DOM Access
+    -- 1. Fast DOM Access (Из V2)
     local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
         local gameUI = playerGui:FindFirstChild("GameUI")
@@ -413,7 +383,7 @@ local function GetTurn()
         end
     end
 
-    -- GC Fallback
+    -- 2. Fallback to GC
     local fn = getActiveUpdateInfoFrame()
     if fn then
         local s, r = pcall(function()
@@ -429,7 +399,7 @@ local function GetTurn()
 end
 
 local function GetLetters()
-    -- Fast DOM Access
+    -- 1. Fast DOM Access (Из V2)
     local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
         for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "PlayerGui"}) do
@@ -444,7 +414,7 @@ local function GetLetters()
         end
     end
 
-    -- GC Fallback
+    -- 2. Fallback to GC
     local fn = getActiveUpdateInfoFrame()
     if fn then
         local s, r = pcall(function()
@@ -539,6 +509,11 @@ end
 -- === FULL ROUND STATE RESET ===
 local function resetRoundState()
     print("🔄 [DEBUG - Game Reset]: Resetting Round State...")
+    
+    if activeUpdateFn then
+        deadFunctions[activeUpdateFn] = true
+    end
+    
     activeUpdateFn = nil 
     typingSessionId = typingSessionId + 1 
     sessionUsedWords = {} 
