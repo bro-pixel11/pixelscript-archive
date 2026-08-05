@@ -21,7 +21,7 @@ local tostring      = tostring
 local tonumber      = tonumber
 local ipairs        = ipairs
 local pairs         = pairs
-local getgc         = getgc
+local getreg        = debug.getregistry or getreg
 local debug_getinfo = debug.getinfo
 local debug_getupvalues = debug.getupvalues
 
@@ -279,12 +279,16 @@ if Network then
     end
 end
 
--- === PURE V2 GETTERS WITH EARLY EXIT (NO WAITING, NO FPS DROPS) ===
+-- === REGISTRY-BASED ZERO-STUTTER GETTERS ===
 local function GetTurn()
     local s, r = pcall(function()
-        for _, v in pairs(getgc()) do
+        local reg = getreg()
+        for i = 1, #reg do
+            local v = reg[i]
             if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                for __, vv in ipairs(debug_getupvalues(v)) do
+                local upvalues = debug_getupvalues(v)
+                for j = 1, #upvalues do
+                    local vv = upvalues[j]
                     if type(vv) == "table" and vv.PlayerID ~= nil then 
                         return vv.PlayerID 
                     end
@@ -298,9 +302,13 @@ end
 
 local function GetLetters()
     local s, r = pcall(function()
-        for _, v in pairs(getgc()) do
+        local reg = getreg()
+        for i = 1, #reg do
+            local v = reg[i]
             if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                for __, vv in pairs(debug_getupvalues(v)) do
+                local upvalues = debug_getupvalues(v)
+                for j = 1, #upvalues do
+                    local vv = upvalues[j]
                     if type(vv) == "table" and vv.Prompt ~= nil then 
                         return vv.Prompt 
                     end
@@ -314,9 +322,13 @@ end
 
 local function getInfoTable()
     local s, r = pcall(function()
-        for _, v in pairs(getgc()) do
+        local reg = getreg()
+        for i = 1, #reg do
+            local v = reg[i]
             if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
-                for __, vv in ipairs(debug_getupvalues(v)) do
+                local upvalues = debug_getupvalues(v)
+                for j = 1, #upvalues do
+                    local vv = upvalues[j]
                     if type(vv) == "table" and vv.FuseStart ~= nil then
                         return vv
                     end
@@ -683,7 +695,7 @@ local function copyword(bruteforce)
     end
 end
 
--- === SINGLETON AUTO SEARCH LOOP CONTROL ===
+-- === DYNAMIC ADAPTIVE SEARCH LOOP CONTROL ===
 local isAutoSearchLoopRunning = false
 
 local function ensureAutoSearchLoop()
@@ -691,12 +703,23 @@ local function ensureAutoSearchLoop()
     isAutoSearchLoopRunning = true
 
     task_spawn(function()
-        print("▶️ [AUTO SEARCH]: Single persistent loop started.")
+        print("▶️ [AUTO SEARCH]: Smooth registry loop started.")
 
         while autosearch do
             xpcall(function()
-                task_wait(0.25)
+                if isTyping or isSubmitting then
+                    task_wait(0.25)
+                    return
+                end
+
                 copyword()
+
+                local currentTurnId = GetTurn()
+                if currentTurnId ~= LocalPlayer.UserId then
+                    task_wait(0.45)
+                else
+                    task_wait(0.20)
+                end
             end, function(err)
                 warn("[AUTO SEARCH LOOP CRASH]: " .. tostring(err))
             end)
