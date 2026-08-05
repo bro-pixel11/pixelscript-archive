@@ -399,7 +399,7 @@ local function GetTurn()
 end
 
 local function GetLetters()
-    -- 1. Сначала проверяем DOM (PlayerGui)
+    -- 1. Fast DOM Access (Из V2)
     local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
     if playerGui then
         for _, guiName in ipairs({"GameUI", "DesktopUI", "MobileUI", "PlayerGui"}) do
@@ -408,14 +408,13 @@ local function GetLetters()
             if promptLbl and promptLbl:IsA("TextLabel") and promptLbl.Visible and promptLbl.Text ~= "" then
                 local txt = promptLbl.Text
                 if not txt:lower():find("waiting") then
-                    print("🟢 [SOURCE CHECK]: Prompt read successfully from PlayerGui! -> " .. tostring(txt))
                     return txt
                 end
             end
         end
     end
 
-    -- 2. Если в PlayerGui ничего не нашлось — срабатывает GC Fallback
+    -- 2. Fallback to GC
     local fn = getActiveUpdateInfoFrame()
     if fn then
         local s, r = pcall(function()
@@ -426,14 +425,12 @@ local function GetLetters()
             end
         end)
         if s and type(r) == "string" and r ~= "" and not r:lower():find("waiting") then 
-            print("🟡 [SOURCE CHECK]: Prompt read from GC Fallback! -> " .. tostring(r))
             return r 
         end
     end
 
     return nil
 end
-
 
 local function getGameStatus()
     local rawPrompt = GetLetters()
@@ -1067,4 +1064,3 @@ task_spawn(function()
         end)
         task_wait(1)
     end
-end)
