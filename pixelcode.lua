@@ -279,25 +279,20 @@ if Network then
     end
 end
 
--- === HYBRID FAST & STABLE GC GETTERS (NO FPS DROP) ===
+-- === DUAL-LAYER ZERO-LAG GETTERS ===
 local function GetTurn()
     local s, r = pcall(function()
         local gc = getgc()
-        local count = 0
         for i = 1, #gc do
             local v = gc[i]
-            if type(v) == "function" then
-                count = count + 1
-                if debug_getinfo(v).name == "updateInfoFrame" then
-                    local upvalues = debug_getupvalues(v)
-                    for j = 1, #upvalues do
-                        local vv = upvalues[j]
-                        if type(vv) == "table" and vv.PlayerID ~= nil then 
-                            return vv.PlayerID 
-                        end
+            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
+                local upvalues = debug_getupvalues(v)
+                for j = 1, #upvalues do
+                    local vv = upvalues[j]
+                    if type(vv) == "table" and vv.PlayerID ~= nil then 
+                        return vv.PlayerID 
                     end
                 end
-                if count % 2500 == 0 then task_wait() end
             end
         end
     end)
@@ -308,46 +303,43 @@ end
 local function GetLetters()
     local s, r = pcall(function()
         local gc = getgc()
-        local count = 0
         for i = 1, #gc do
             local v = gc[i]
-            if type(v) == "function" then
-                count = count + 1
-                if debug_getinfo(v).name == "updateInfoFrame" then
-                    local upvalues = debug_getupvalues(v)
-                    for j = 1, #upvalues do
-                        local vv = upvalues[j]
-                        if type(vv) == "table" and vv.Prompt ~= nil then 
-                            return vv.Prompt 
-                        end
+            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
+                local upvalues = debug_getupvalues(v)
+                for j = 1, #upvalues do
+                    local vv = upvalues[j]
+                    if type(vv) == "table" and vv.Prompt ~= nil then 
+                        return vv.Prompt 
                     end
                 end
-                if count % 2500 == 0 then task_wait() end
             end
         end
     end)
-    if s and type(r) == "string" then return r end
+    if s and type(r) == "string" and r ~= "" then return r end
+
+    -- Страховка по UI
+    local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if playerGui then
+        local promptLabel = playerGui:FindFirstChild("PromptLabel", true)
+        if promptLabel and promptLabel:IsA("TextLabel") then return promptLabel.Text end
+    end
     return ""
 end
 
 local function getInfoTable()
     local s, r = pcall(function()
         local gc = getgc()
-        local count = 0
         for i = 1, #gc do
             local v = gc[i]
-            if type(v) == "function" then
-                count = count + 1
-                if debug_getinfo(v).name == "updateInfoFrame" then
-                    local upvalues = debug_getupvalues(v)
-                    for j = 1, #upvalues do
-                        local vv = upvalues[j]
-                        if type(vv) == "table" and vv.FuseStart ~= nil then 
-                            return vv 
-                        end
+            if type(v) == "function" and debug_getinfo(v).name == "updateInfoFrame" then
+                local upvalues = debug_getupvalues(v)
+                for j = 1, #upvalues do
+                    local vv = upvalues[j]
+                    if type(vv) == "table" and vv.FuseStart ~= nil then 
+                        return vv 
                     end
                 end
-                if count % 2500 == 0 then task_wait() end
             end
         end
     end)
@@ -710,30 +702,52 @@ local function copyword(bruteforce)
     end
 end
 
--- === SINGLETON AUTO SEARCH LOOP CONTROL ===
+-- === EVENT-DRIVEN HYBRID SEARCH CONTROL (0% CPU IDLE) ===
 local isAutoSearchLoopRunning = false
+
+local function setupEventDrivenTriggers()
+    pcall(function()
+        local playerGui = LocalPlayer:WaitForChild("PlayerGui", 5)
+        if not playerGui then return end
+
+        local gameUI = playerGui:WaitForChild("GameUI", 5)
+        if gameUI then
+            local typeBox = gameUI:FindFirstChild("Typebox", true)
+            if typeBox then
+                -- Сигнал 1: Появление текстового поля ввода (Твой ход)
+                typeBox:GetPropertyChangedSignal("Visible"):Connect(function()
+                    if autosearch and typeBox.Visible then
+                        task_spawn(function() copyword() end)
+                    end
+                end)
+            end
+        end
+    end)
+end
+
+task_spawn(setupEventDrivenTriggers)
 
 local function ensureAutoSearchLoop()
     if isAutoSearchLoopRunning then return end
     isAutoSearchLoopRunning = true
 
     task_spawn(function()
-        print("▶️ [AUTO SEARCH]: Single persistent loop started.")
+        print("▶️ [AUTO SEARCH]: Event-driven hybrid loop started.")
 
         while autosearch do
             xpcall(function()
                 if isTyping or isSubmitting then
-                    task_wait(0.25)
+                    task_wait(0.3)
                     return
                 end
 
-                copyword()
-                
+                -- Если сейчас не наш ход — засыпаем и НЕ трогаем getgc()
                 local currentTurnId = GetTurn()
                 if currentTurnId ~= LocalPlayer.UserId then
-                    task_wait(0.35)
+                    task_wait(0.6) -- Редкий легкий сон на чужом ходу
                 else
-                    task_wait(0.15)
+                    copyword()
+                    task_wait(0.2)
                 end
             end, function(err)
                 warn("[AUTO SEARCH LOOP CRASH]: " .. tostring(err))
@@ -922,7 +936,7 @@ matchLabel = MainTab:CreateLabel("Current Match: None")
 fusionLabel = MainTab:CreateLabel("Fusion Progress: 0.00s / 0.00s")
 MainTab:CreateSection("------------------")
 
--- === BACKGROUND AUTO JOIN THREAD ===
+-- === BACKGROUND AUTO JOIN THREAD & REGISTER TRIGGER ===
 if Games then
     local registerGame = Games:FindFirstChild("RegisterGame")
     if registerGame then
@@ -936,6 +950,14 @@ if Games then
                     pcall(function() 
                         Games.GameEvent:FireServer(gameRoomID, "JoinGame") 
                     end)
+                end)
+            end
+            
+            -- Триггер 2: Сервер зарегистрировал игру
+            if autosearch then
+                task_spawn(function()
+                    task_wait(0.5)
+                    copyword()
                 end)
             end
         end)
