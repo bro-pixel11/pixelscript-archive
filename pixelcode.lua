@@ -360,7 +360,7 @@ local function getGameTextBox()
     return nil
 end
 
--- === ORIGINAL FUSE DELAY LOGIC (REALTIME UPDATE) ===
+-- === OPTIMIZED FUSE DELAY LOGIC (NO GC SPAM IN LOOP) ===
 local function waitFuseProgress(targetSession)
     if not useFuseProgress then return end
 
@@ -377,20 +377,13 @@ local function waitFuseProgress(targetSession)
     local totalFuseTime = math.abs(1 / fuseRate)
     local targetWaitSeconds = math.max(0, (totalFuseTime * fusePercent) - 0.05)
 
-    local localStart = os_clock()
+    currentFusionStats = string.format("%.2fs / %.2fs", targetWaitSeconds, totalFuseTime)
+    if fusionLabel then 
+        fusionLabel:Set("Fusion Progress: " .. currentFusionStats) 
+    end
 
-    while typingSessionId == targetSession do
-        local tblCurrent = getInfoTable()
-        if not tblCurrent or tblCurrent.FuseStart ~= fuseStart then break end
-
-        local elapsed = os_clock() - localStart
-        currentFusionStats = string.format("%.2fs / %.2fs", math.min(elapsed, totalFuseTime), totalFuseTime)
-        if fusionLabel then 
-            fusionLabel:Set("Fusion Progress: " .. currentFusionStats) 
-        end
-
-        if elapsed >= targetWaitSeconds then break end
-        task_wait(0.01)
+    if targetWaitSeconds > 0 and typingSessionId == targetSession then
+        task_wait(targetWaitSeconds)
     end
 end
 
@@ -411,15 +404,13 @@ local function resetRoundState()
     if fusionLabel then fusionLabel:Set("Fusion Progress: 0.00s / 0.00s") end
 end
 
--- === ORIGINAL STRICT TYPING EXECUTION WITH IN-LOOP CHECKS ===
+-- === OPTIMIZED FAST TYPING EXECUTION ===
 local function typeWordMobile(word, targetPrompt)
     if isTyping then return end 
     isTyping = true 
     
     typingSessionId = typingSessionId + 1
     local currentSession = typingSessionId
-
-    print("⌨️ [DEBUG - Type]: Starting typing process for word: " .. tostring(word))
 
     local success, err = pcall(function()
         if not instanttype then 
@@ -436,8 +427,8 @@ local function typeWordMobile(word, targetPrompt)
         local focusedBox = UserInputService:GetFocusedTextBox()
         if focusedBox and focusedBox ~= getGameTextBox() then return end
 
-        local currentPrompt, isMyTurn = getGameStatus()
-        if currentPrompt ~= targetPrompt or not isMyTurn then return end
+        local currentTurnId = GetTurn()
+        if currentTurnId ~= LocalPlayer.UserId then return end
         
         local textBox = getGameTextBox()
         if textBox then 
@@ -461,8 +452,8 @@ local function typeWordMobile(word, targetPrompt)
                 break
             end
 
-            local checkPrompt, checkTurn = getGameStatus()
-            if checkPrompt ~= targetPrompt or not checkTurn then 
+            -- Fast DOM/Turn Check (No GC Scrape per Character)
+            if GetTurn() ~= LocalPlayer.UserId then 
                 interrupted = true
                 break 
             end
@@ -523,8 +514,7 @@ local function typeWordMobile(word, targetPrompt)
         end
         
         if not interrupted and currentSession == typingSessionId then
-            local finalPrompt, finalTurn = getGameStatus()
-            if finalPrompt == targetPrompt and finalTurn then
+            if GetTurn() == LocalPlayer.UserId then
                 isSubmitting = true 
 
                 if not instanttype then task_wait(0.02) end
@@ -613,7 +603,7 @@ local function findWordForPrompt(prompt)
 end
 
 local function TryTyping()
-    if not autosearch or typingActive then return end
+    if not autosearch or typingActive or isTyping then return end
     typingActive = true
 
     while GetTurn() ~= LocalPlayer.UserId do
@@ -660,7 +650,7 @@ local function linkEvents()
                 local typeBox = gameUI:FindFirstChild("Typebox", true)
                 if typeBox then
                     typeBox:GetPropertyChangedSignal("Visible"):Connect(function()
-                        if autosearch then task_spawn(TryTyping) end
+                        if autosearch and not isTyping then task_spawn(TryTyping) end
                     end)
                 end
             end
@@ -673,7 +663,7 @@ task_spawn(linkEvents)
 task_spawn(function()
     local lastPrompt = ""
     while task_wait(0.25) do
-        if autosearch and GetTurn() == LocalPlayer.UserId and not isTyping and not typingActive then
+        if not isTyping and autosearch and GetTurn() == LocalPlayer.UserId and not typingActive then
             local currentPrompt = GetLetters() or ""
             if currentPrompt ~= "" and currentPrompt ~= lastPrompt then
                 lastPrompt = currentPrompt
